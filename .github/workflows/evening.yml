@@ -2,7 +2,7 @@ name: Вечерний итог
 
 on:
   schedule:
-    - cron: "20 16 * * *"  # 21:20 по Уфе (UTC+5); бот сам дождётся 21:30
+    - cron: "35 16 * * *"  # 21:35 по Уфе (UTC+5); бот сам дождётся 21:45
   workflow_dispatch:
 
 concurrency:
