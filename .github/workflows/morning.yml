@@ -32,6 +32,7 @@ jobs:
           MAILRU_APP_PASSWORD: ${{ secrets.MAILRU_APP_PASSWORD }}
           MAIL_VIP: ${{ vars.MAIL_VIP }}
           MAIL_BLOCK: ${{ vars.MAIL_BLOCK }}
+          MAIL_KEYWORDS: ${{ vars.MAIL_KEYWORDS }}
           NO_WAIT: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
         run: python bot.py morning
       # GitHub отключает расписание, если в репозитории 60 дней нет активности.
