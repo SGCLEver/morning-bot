@@ -1,0 +1,45 @@
+name: Утренняя сводка
+
+on:
+  schedule:
+    - cron: "20 1 * * *"   # 06:20 по Уфе (UTC+5); бот сам дождётся 06:30
+  workflow_dispatch:        # ручной запуск для проверки (без ожидания)
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Сводка
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TODOIST_TOKEN: ${{ secrets.TODOIST_TOKEN }}
+          MAILRU_EMAIL: ${{ secrets.MAILRU_EMAIL }}
+          MAILRU_APP_PASSWORD: ${{ secrets.MAILRU_APP_PASSWORD }}
+          MAIL_VIP: ${{ vars.MAIL_VIP }}
+          MAIL_BLOCK: ${{ vars.MAIL_BLOCK }}
+          NO_WAIT: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+        run: python bot.py morning
+      # GitHub отключает расписание, если в репозитории 60 дней нет активности.
+      # Раз в месяц бот делает служебный коммит, чтобы этого не случилось.
+      - name: Не дать GitHub уснуть
+        if: github.event_name == 'schedule'
+        run: |
+          if [ "$(date -u +%d)" = "01" ]; then
+            date -u > .keepalive
+            git config user.name "morning-bot"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .keepalive && git commit -m "keepalive" && git push || true
+          fi
