@@ -28,7 +28,7 @@ LAT = os.environ.get("CITY_LAT", "54.7348")
 LON = os.environ.get("CITY_LON", "55.9579")
 COURSE_PROJECT = os.environ.get("COURSE_PROJECT", "Курс по истории")
 MORNING_AT = os.environ.get("MORNING_AT", "06:30")
-EVENING_AT = os.environ.get("EVENING_AT", "21:30")
+EVENING_AT = os.environ.get("EVENING_AT", "21:45")
 # до какого часа вечером бот ждёт нажатия кнопки (дальше нажатие обработает утренний запуск)
 EVENING_WAIT_UNTIL_HOUR = int(os.environ.get("EVENING_WAIT_UNTIL_HOUR", "24"))
 NO_WAIT = os.environ.get("NO_WAIT") == "1"
@@ -212,22 +212,19 @@ def load_todoist():
     return tasks, projects, sections
 
 
-def task_line(t, sections, show_date=False, show_section=True):
+def task_line(t, show_date=False):
+    """Одна задача одной строкой: время/дата жирным, затем название."""
+    name = esc(clean(t["content"]))
+    if t.get("priority") == 4:
+        name = "❗️" + name
     parts = []
     if show_date:
         parts.append(fmt_day(due_date(t)))
-    tm = due_time(t)
-    if tm:
-        parts.append(tm)
-    prefix = " · ".join(parts)
-    pr = {1: "", 2: "🔵 ", 3: "🟠 ", 4: "🔴 "}.get(t.get("priority", 1), "")
-    line = f"• {pr}{esc(clean(t['content']))}"
-    if prefix:
-        line = f"• <b>{prefix}</b>  {pr}{esc(clean(t['content']))}"
-    sec = sections.get(t.get("section_id") or "")
-    if show_section and sec:
-        line += f" <i>· {esc(sec['name'])}</i>"
-    return line
+    if due_time(t):
+        parts.append(due_time(t))
+    if parts:
+        return f"<b>{' · '.join(parts)}</b>  {name}"
+    return f"▫️ {name}"
 
 
 def sort_key(t):
@@ -265,29 +262,13 @@ def weather():
     return http("GET", "https://api.open-meteo.com/v1/forecast?" + q)
 
 
-def weather_today(w):
-    d, c = w["daily"], w["current"]
-    ico, txt = WMO.get(d["weather_code"][0], ("🌡", ""))
-    lines = [
-        f"{ico} <b>{esc(CITY)}</b>: сейчас {t_fmt(c['temperature_2m'])}° "
-        f"(ощущается {t_fmt(c['apparent_temperature'])}°)",
-        f"Днём {t_fmt(d['temperature_2m_min'][0])}…{t_fmt(d['temperature_2m_max'][0])}°, {txt}, "
-        f"ветер до {round(d['wind_speed_10m_max'][0])} м/с",
-    ]
-    p = d["precipitation_probability_max"][0]
-    if p is not None and p >= 30:
-        lines[-1] += f", осадки {p}% ☂️"
-    lines.append(f"Рассвет {d['sunrise'][0][11:16]} · закат {d['sunset'][0][11:16]}")
-    return "\n".join(lines)
-
-
-def weather_tomorrow(w):
+def weather_line(w, i):
     d = w["daily"]
-    ico, txt = WMO.get(d["weather_code"][1], ("🌡", ""))
-    s = f"{ico} Завтра, {esc(CITY)}: {t_fmt(d['temperature_2m_min'][1])}…{t_fmt(d['temperature_2m_max'][1])}°, {txt}"
-    p = d["precipitation_probability_max"][1]
-    if p is not None and p >= 30:
-        s += f", осадки {p}% ☂️"
+    ico, txt = WMO.get(d["weather_code"][i], ("🌡", ""))
+    s = f"{ico} {t_fmt(d['temperature_2m_min'][i])}…{t_fmt(d['temperature_2m_max'][i])}°, {txt}"
+    p = d["precipitation_probability_max"][i]
+    if p is not None and p >= 40:
+        s += ", возьми зонт ☂️"
     return s
 
 
@@ -383,92 +364,99 @@ def wait_until(hhmm):
         time.sleep(delay)
 
 
+_NAME = None
+
+
+def user_name():
+    """Имя для обращения: USER_NAME или имя из профиля Telegram."""
+    global _NAME
+    if _NAME is None:
+        _NAME = os.environ.get("USER_NAME", "")
+        if not _NAME:
+            try:
+                _NAME = tg("getChat", chat_id=TG_CHAT).get("first_name", "")
+            except Exception as e:
+                log("getChat:", e)
+    return _NAME
+
+
+def hello(greeting):
+    n = user_name()
+    return f"{greeting}, {esc(n)}" if n else greeting
+
+
+def strip_dedl(s):
+    return re.sub(r",?\s*ДЕДЛ\.?\s*$", "", clean(s), flags=re.I)
+
+
+def when_left(left):
+    if left == 0:
+        return "сегодня"
+    if left == 1:
+        return "завтра"
+    return f"через {left} {plural(left, 'день', 'дня', 'дней')}"
+
+
 def morning():
     process_updates(wait=False)  # вдруг вчера кнопку нажали поздно
     wait_until(MORNING_AT)
     d0 = today()
-    blocks = [f"☀️ <b>Доброе утро!</b> {fmt_long(d0)}"]
+    tasks, projects, sections = load_todoist()
 
+    head = f"☀️ <b>{hello('Доброе утро')}!</b>\n{fmt_long(d0)}"
     try:
-        blocks.append(weather_today(weather()))
+        head += f"\n{weather_line(weather(), 0)}"
     except Exception as e:
         log("weather:", e)
+    blocks = [head]
 
-    tasks, projects, sections = load_todoist()
-    course_pid = next((pid for pid, p in projects.items() if p["name"] == COURSE_PROJECT), None)
-
-    overdue = sorted([t for t in tasks if due_date(t) and due_date(t) < d0], key=sort_key)
+    # Сегодня
     todays = sorted([t for t in tasks if due_date(t) == d0], key=sort_key)
-    if todays or overdue:
-        b = [f"📋 <b>На сегодня</b> ({len(todays)})"]
-        b += [task_line(t, sections) for t in todays]
-        if overdue:
-            b.append(f"\n⚠️ <b>Просрочено</b> ({len(overdue)})")
-            b += [task_line(t, sections, show_date=True) for t in overdue[:10]]
-            if len(overdue) > 10:
-                b.append(f"…и ещё {len(overdue) - 10}")
-        blocks.append("\n".join(b))
+    overdue = sorted([t for t in tasks if due_date(t) and due_date(t) < d0], key=sort_key)
+    if todays:
+        b = [f"📋 <b>СЕГОДНЯ · {len(todays)}</b>"] + [task_line(t) for t in todays]
     else:
-        blocks.append("📋 На сегодня задач нет. Свободный день!")
+        b = ["📋 <b>СЕГОДНЯ</b>", "Дел нет, свободный день"]
+    if overdue:
+        b.append(f"\n<i>Хвосты с прошлых дней · {len(overdue)}</i>")
+        b += [task_line(t, show_date=True) for t in overdue[:7]]
+        if len(overdue) > 7:
+            b.append(f"…и ещё {len(overdue) - 7}")
+    blocks.append("\n".join(b))
 
-    # Дедлайны (пробники, олимпиады): ближайшие 30 дней
-    dls = []
-    for t in tasks:
-        dl = deadline_of(t)
-        if dl and 0 <= (dl - d0).days <= 30:
-            dls.append((dl, t))
-    dls.sort(key=lambda x: x[0])
+    # Дедлайны на 30 дней вперёд
+    dls = sorted([(deadline_of(t), t) for t in tasks
+                  if deadline_of(t) and 0 <= (deadline_of(t) - d0).days <= 30], key=lambda x: x[0])
     if dls:
-        b = ["🎯 <b>Дедлайны</b>"]
-        for dl, t in dls[:8]:
+        b = ["🎯 <b>ДЕДЛАЙНЫ</b>"]
+        for dl, t in dls[:6]:
             left = (dl - d0).days
-            when = "сегодня!" if left == 0 else "завтра" if left == 1 else f"через {left} {plural(left, 'день', 'дня', 'дней')}"
-            name = re.sub(r",?\s*ДЕДЛ\.?\s*$", "", clean(t["content"]), flags=re.I)
-            fire = "🔥 " if left <= 3 else ""
-            b.append(f"• {fire}{esc(name)}: <b>{when}</b> ({fmt_day(dl)})")
+            mark = "🔥" if left <= 3 else "▫️"
+            b.append(f"{mark} {esc(strip_dedl(t['content']))}\n      <b>{when_left(left)}</b> · {fmt_day(dl)}")
         blocks.append("\n".join(b))
 
-    # Курс на неделю вперёд (без сегодняшнего, оно уже выше)
-    if course_pid:
-        week = [t for t in tasks if t.get("project_id") == course_pid and due_date(t)
-                and 0 < (due_date(t) - d0).days <= 7 and not deadline_of(t)]
-        if week:
-            by_sec = {}
-            for t in sorted(week, key=sort_key):
-                sec = (sections.get(t.get("section_id") or "") or {}).get("name", "Без раздела")
-                by_sec.setdefault(sec, []).append(t)
-            b = [f"📚 <b>{esc(COURSE_PROJECT)}: неделя вперёд</b>"]
-            for sec, items in by_sec.items():
-                b.append(f"<i>{esc(sec)}</i>")
-                b += [task_line(t, sections, show_date=True, show_section=False) for t in items]
-            blocks.append("\n".join(b))
-
-    # Почта: только важное, с прошлого утра
+    # Почта: только важное за сутки
     try:
         mails = important_mail(now() - timedelta(hours=24))
-        if mails is not None:
-            if mails:
-                b = [f"✉️ <b>Важные письма</b> ({len(mails)})"]
-                for x in mails[:8]:
-                    b.append(f"• <b>{esc(x['from'])}</b>: {esc(x['subject'])}")
-                if len(mails) > 8:
-                    b.append(f"…и ещё {len(mails) - 8}")
-                blocks.append("\n".join(b))
-            else:
-                blocks.append("✉️ Важных писем нет")
+        if mails:
+            b = [f"✉️ <b>ПОЧТА · {len(mails)}</b>"]
+            b += [f"▫️ <b>{esc(x['from'])}</b>\n      {esc(x['subject'])}" for x in mails[:6]]
+            if len(mails) > 6:
+                b.append(f"…и ещё {len(mails) - 6}")
+            blocks.append("\n".join(b))
+        elif mails is not None:
+            blocks.append("✉️ Важных писем нет")
     except Exception as e:
         log("mail:", e)
-        blocks.append("✉️ Почту проверить не удалось (проверь пароль для внешних приложений)")
+        blocks.append("✉️ Почту проверить не удалось")
 
     send("\n\n".join(blocks))
 
-    # Отдельное напоминание о горящих дедлайнах
-    hot = [(dl, t) for dl, t in dls if (dl - d0).days in (0, 1, 3)]
-    for dl, t in hot:
+    # Отдельное напоминание только накануне и в день дедлайна
+    for dl, t in dls:
         left = (dl - d0).days
-        name = re.sub(r",?\s*ДЕДЛ\.?\s*$", "", clean(t["content"]), flags=re.I)
-        when = "сегодня" if left == 0 else "завтра" if left == 1 else "через 3 дня"
-        send(f"⏰ <b>Дедлайн {when}</b>\n{esc(name)}\nСдать до {dl.day} {MONTHS[dl.month - 1]} ({WD_SHORT[dl.weekday()]})")
+        if left in (0, 1):
+            send(f"⏰ <b>Дедлайн {when_left(left)}!</b>\n{esc(strip_dedl(t['content']))}")
 
 
 # ---------- Вечер ----------
@@ -498,36 +486,38 @@ def evening():
     done = completed_between(midnight, now())
     left = sorted([t for t in tasks if due_date(t) and due_date(t) <= d0], key=sort_key)
 
-    b = [f"🌙 <b>Итоги дня</b> · {fmt_long(d0).lower()}"]
+    head = f"🌙 <b>{hello('Добрый вечер')}!</b>\nИтоги дня · {fmt_day(d0)}"
+    blocks = [head]
+
     if done:
-        b.append(f"\n✅ <b>Сделано: {len(done)}</b>")
-        b += [f"• {esc(clean(t.get('content', '')))}" for t in done[:12]]
-        if len(done) > 12:
-            b.append(f"…и ещё {len(done) - 12}")
+        b = [f"✅ <b>СДЕЛАНО · {len(done)}</b>"]
+        b += [f"▫️ {esc(clean(t.get('content', '')))}" for t in done[:10]]
+        if len(done) > 10:
+            b.append(f"…и ещё {len(done) - 10}")
     else:
-        b.append("\nСегодня ничего не отмечено выполненным.")
+        b = ["✅ <b>СДЕЛАНО</b>", "Сегодня ничего не отмечено"]
+    blocks.append("\n".join(b))
+
+    if d0.weekday() == 6:
+        blocks.append(weekly_stats(d0))
 
     try:
-        b.append("\n" + weather_tomorrow(weather()))
+        blocks.append(f"<i>Завтра:</i> {weather_line(weather(), 1)}")
     except Exception as e:
         log("weather:", e)
 
-    if d0.weekday() == 6:
-        b.append("\n" + weekly_stats(d0))
-
     if not left:
-        b.append("\n🎉 Все дела на сегодня закрыты!")
-        send("\n".join(b))
+        blocks.append("🎉 <b>Все дела на сегодня закрыты!</b>")
+        send("\n\n".join(blocks))
         return
 
+    blocks.append(f"⏳ <b>ОСТАЛОСЬ · {len(left)}</b>"
+                  "\nНажми на дело, чтобы оставить его на месте (✖️).\nОтмеченные ✅ перенесу на завтра.")
     shown = left[:40]
-    b.append(f"\n⏳ <b>Не выполнено: {len(left)}</b>")
-    b.append("Отметь, что перенести на завтра, и нажми «Перенести». "
-             "Галочка ✅ значит перенести, ✖️ значит оставить как есть.")
     kb = [[{"text": "✅ " + short(t["content"]), "callback_data": "t:" + t["id"]}] for t in shown]
-    kb.append([{"text": "➡️ Перенести на завтра", "callback_data": "go:" + d0.isoformat()},
-               {"text": "Не переносить", "callback_data": "no"}])
-    msg = send("\n".join(b), kb)
+    kb.append([{"text": "➡️ Перенести на завтра", "callback_data": "go:" + d0.isoformat()}])
+    kb.append([{"text": "Ничего не переносить", "callback_data": "no"}])
+    msg = send("\n\n".join(blocks), kb)
 
     # Ждём нажатия до полуночи (если позже, обработает утренний запуск)
     end = datetime(d0.year, d0.month, d0.day, tzinfo=TZ) + timedelta(hours=EVENING_WAIT_UNTIL_HOUR)
@@ -548,14 +538,14 @@ def weekly_stats(d0):
         if ts:
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(TZ)
             per[dt.weekday()] += 1
+    total = sum(per)
     top = max(per) or 1
-    lines = [f"📊 <b>Неделя: {sum(per)} {plural(sum(per), 'дело', 'дела', 'дел')}</b>"]
+    lines = [f"📊 <b>НЕДЕЛЯ · {total} {plural(total, 'дело', 'дела', 'дел')}</b>"]
+    rows = []
     for i, n in enumerate(per):
-        bar = "▇" * round(n / top * 10) if n else "·"
-        lines.append(f"<code>{WD_SHORT[i]} {bar} {n}</code>")
-    best = max(range(7), key=lambda i: per[i])
-    if per[best]:
-        lines.append(f"Самый продуктивный день: {WD[best]}")
+        bar = "█" * round(n / top * 8) if n else "·"
+        rows.append(f"{WD_SHORT[i]} {bar} {n}")
+    lines.append("<code>" + "\n".join(rows) + "</code>")
     return "\n".join(lines)
 
 
@@ -573,7 +563,7 @@ def process_updates(wait, until=None, stop_on_msg=None):
             if remaining <= 0:
                 break
             timeout = min(50, remaining)
-        params = {"timeout": timeout, "allowed_updates": ["callback_query"]}
+        params = {"timeout": timeout, "allowed_updates": ["message", "callback_query"]}
         if offset is not None:
             params["offset"] = offset
         try:
@@ -614,7 +604,6 @@ def handle_callback(cq):
         return False
     data = cq.get("data", "")
     kb = (msg.get("reply_markup") or {}).get("inline_keyboard", [])
-    text = msg.get("text", "")
 
     if data.startswith("t:"):
         for row in kb:
@@ -628,8 +617,9 @@ def handle_callback(cq):
         return False
 
     if data == "no":
-        tg("editMessageText", chat_id=TG_CHAT, message_id=msg["message_id"], parse_mode="HTML",
-           text=esc(text) + "\n\n👌 Оставлено как есть.")
+        tg("editMessageReplyMarkup", chat_id=TG_CHAT, message_id=msg["message_id"],
+           reply_markup={"inline_keyboard": []})
+        send("👌 Ничего не переношу, всё осталось на своих местах.")
         tg("answerCallbackQuery", callback_query_id=cq["id"], text="Оставил как есть")
         return True
 
@@ -640,13 +630,15 @@ def handle_callback(cq):
                if btn.get("callback_data", "").startswith("t:") and btn["text"].startswith("✅")]
         moved, skipped = reschedule(ids, target)
         word = "завтра" if target == today() + timedelta(days=1) else "сегодня" if target == today() else fmt_day(target)
-        note = f"\n\n➡️ Перенесено на {word} ({fmt_day(target)}): {moved}"
+        note = f"➡️ Перенёс на {word} ({fmt_day(target)}): <b>{moved}</b>"
+        kept = sum(1 for row in kb for b in row if b.get("callback_data", "").startswith("t:")) - len(ids)
+        if kept:
+            note += f"\nОставил на месте: {kept}"
         if skipped:
             note += f"\nУже сделано или сдвинуто вручную: {skipped}"
-        if len(ids) < sum(1 for row in kb for b in row if b.get("callback_data", "").startswith("t:")):
-            note += "\nОстальное оставлено как есть."
-        tg("editMessageText", chat_id=TG_CHAT, message_id=msg["message_id"], parse_mode="HTML",
-           text=esc(text) + note)
+        tg("editMessageReplyMarkup", chat_id=TG_CHAT, message_id=msg["message_id"],
+           reply_markup={"inline_keyboard": []})
+        send(note + "\n\nСпокойной ночи 🌙")
         tg("answerCallbackQuery", callback_query_id=cq["id"], text=f"Перенесено: {moved}")
         return True
 
