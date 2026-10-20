@@ -696,8 +696,29 @@ def reschedule(ids, target):
     return moved, skipped
 
 
+def whoami():
+    """Отвечает каждому, кто написал боту, его числовым ID (для секрета TELEGRAM_CHAT_ID)."""
+    ups = tg("getUpdates", timeout=0, allowed_updates=["message"])
+    chats = {}
+    for u in ups:
+        chat = (u.get("message") or {}).get("chat") or {}
+        if chat.get("type") == "private":
+            chats[chat["id"]] = chat
+    for cid in chats:
+        tg("sendMessage", chat_id=cid, parse_mode="HTML",
+           text=f"Твой ID: <code>{cid}</code>\n\nНажми на число, чтобы скопировать, и вставь его "
+                f"в секрет TELEGRAM_CHAT_ID на GitHub.")
+    if ups:
+        tg("getUpdates", offset=ups[-1]["update_id"] + 1, timeout=0)
+    log(f"ответил в {len(chats)} чат(ов)")
+    if not chats:
+        sys.exit("Боту никто не писал за последние сутки: напиши ему любое сообщение и запусти снова")
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "morning"
+    if mode == "whoami":
+        return whoami()
     missing = [k for k in ("TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID", "TODOIST_TOKEN") if not os.environ.get(k)]
     if missing:
         sys.exit("Не заданы секреты: " + ", ".join(missing))
