@@ -213,18 +213,27 @@ def load_todoist():
 
 
 def task_line(t, show_date=False):
-    """Одна задача одной строкой: время/дата жирным, затем название."""
-    name = esc(clean(t["content"]))
+    """Строка задачи по шаблону: моноширинная плашка (время, ДЗ, дата) и название."""
+    name = clean(t["content"])
+    tags = []
+    if show_date:
+        d = due_date(t)
+        tags.append(f"{WD_SHORT[d.weekday()]} {d.day:02d}.{d.month:02d}")
+    if due_time(t):
+        tags.append(due_time(t))
+    m = re.match(r"^ДЗ\b[\s:.,-]*", name)
+    if m:
+        tags.append("ДЗ")
+        name = name[m.end():] or name
+    name = esc(name)
     if t.get("priority") == 4:
         name = "❗️" + name
-    parts = []
-    if show_date:
-        parts.append(fmt_day(due_date(t)))
-    if due_time(t):
-        parts.append(due_time(t))
-    if parts:
-        return f"<b>{' · '.join(parts)}</b>  {name}"
-    return f"▫️ {name}"
+    plate = " ".join(f"<code>{x}</code>" for x in tags)
+    return f"{plate} {name}" if plate else name
+
+
+def quote(lines):
+    return "<blockquote>" + "\n".join(lines) + "</blockquote>"
 
 
 def sort_key(t):
@@ -397,58 +406,69 @@ def when_left(left):
     return f"через {left} {plural(left, 'день', 'дня', 'дней')}"
 
 
+def urgency(left):
+    return "🔴" if left <= 3 else "🟠" if left <= 7 else "🟢"
+
+
+def left_plate(left):
+    if left == 0:
+        return "<code>сегодня</code>"
+    if left == 1:
+        return "<code>завтра</code>"
+    return f"<code>{left} {plural(left, 'день', 'дня', 'дней')}</code>"
+
+
 def morning():
     process_updates(wait=False)  # вдруг вчера кнопку нажали поздно
     wait_until(MORNING_AT)
     d0 = today()
     tasks, projects, sections = load_todoist()
 
-    head = f"☀️ <b>{hello('Доброе утро')}!</b>\n{fmt_long(d0)}"
+    head = [f"<b>☀️ {hello('Доброе утро')}!</b>",
+            f"<i>{WD[d0.weekday()].capitalize()}, {d0.day} {MONTHS[d0.month - 1]}</i>"]
     try:
-        head += f"\n{weather_line(weather(), 0)}"
+        head.append(weather_line(weather(), 0))
     except Exception as e:
         log("weather:", e)
-    blocks = [head]
+    blocks = ["\n".join(head)]
 
-    # Сегодня
     todays = sorted([t for t in tasks if due_date(t) == d0], key=sort_key)
-    overdue = sorted([t for t in tasks if due_date(t) and due_date(t) < d0], key=sort_key)
     if todays:
-        b = [f"📋 <b>СЕГОДНЯ · {len(todays)}</b>"] + [task_line(t) for t in todays]
+        blocks.append(f"<b>📋 СЕГОДНЯ · {len(todays)}</b>\n" + quote([task_line(t) for t in todays]))
     else:
-        b = ["📋 <b>СЕГОДНЯ</b>", "Дел нет, свободный день"]
-    if overdue:
-        b.append(f"\n<i>Хвосты с прошлых дней · {len(overdue)}</i>")
-        b += [task_line(t, show_date=True) for t in overdue[:7]]
-        if len(overdue) > 7:
-            b.append(f"…и ещё {len(overdue) - 7}")
-    blocks.append("\n".join(b))
+        blocks.append("📋 Сегодня: дел нет")
 
-    # Дедлайны на 14 дней вперёд
+    overdue = sorted([t for t in tasks if due_date(t) and due_date(t) < d0], key=sort_key)
+    if overdue:
+        lines = [task_line(t, show_date=True) for t in overdue[:7]]
+        if len(overdue) > 7:
+            lines.append(f"<i>…и ещё {len(overdue) - 7}</i>")
+        blocks.append(f"<b>⚠️ ХВОСТЫ · {len(overdue)}</b>\n" + quote(lines))
+
     dls = sorted([(deadline_of(t), t) for t in tasks
                   if deadline_of(t) and 0 <= (deadline_of(t) - d0).days <= 14], key=lambda x: x[0])
     if dls:
-        b = ["🎯 <b>ДЕДЛАЙНЫ</b>"]
+        lines = []
         for dl, t in dls[:6]:
             left = (dl - d0).days
-            mark = "🔥" if left <= 3 else "▫️"
-            b.append(f"{mark} {esc(strip_dedl(t['content']))}\n      <b>{when_left(left)}</b> · {fmt_day(dl)}")
-        blocks.append("\n".join(b))
+            lines.append(f"{urgency(left)} {esc(strip_dedl(t['content']))}\n"
+                         f"      {left_plate(left)} · {fmt_day(dl)}")
+        blocks.append("<b>🎯 ДЕДЛАЙНЫ</b>\n" + quote(lines))
+    else:
+        blocks.append("🎯 Дедлайнов в ближайшие две недели нет")
 
-    # Почта: только важное за сутки
     try:
         mails = important_mail(now() - timedelta(hours=24))
         if mails:
-            b = [f"✉️ <b>ПОЧТА · {len(mails)}</b>"]
-            b += [f"▫️ <b>{esc(x['from'])}</b>\n      {esc(x['subject'])}" for x in mails[:6]]
+            lines = [f"<b>{esc(x['from'])}</b>\n      {esc(x['subject'])}" for x in mails[:6]]
             if len(mails) > 6:
-                b.append(f"…и ещё {len(mails) - 6}")
-            blocks.append("\n".join(b))
+                lines.append(f"<i>…и ещё {len(mails) - 6}</i>")
+            blocks.append(f"<b>✉️ ПОЧТА · {len(mails)}</b>\n" + quote(lines))
         elif mails is not None:
-            blocks.append("✉️ Важных писем нет")
+            blocks.append("✉️ Почта: важного нет")
     except Exception as e:
         log("mail:", e)
-        blocks.append("✉️ Почту проверить не удалось")
+        blocks.append("✉️ Почта: проверить не удалось")
 
     send("\n\n".join(blocks))
 
@@ -456,7 +476,8 @@ def morning():
     for dl, t in dls:
         left = (dl - d0).days
         if left in (0, 1):
-            send(f"⏰ <b>Дедлайн {when_left(left)}!</b>\n{esc(strip_dedl(t['content']))}")
+            send(f"<b>⏰ ДЕДЛАЙН {when_left(left).upper()}</b>\n"
+                 + quote([f"🔴 {esc(strip_dedl(t['content']))}\n      {left_plate(left)} · {fmt_day(dl)}"]))
 
 
 # ---------- Вечер ----------
@@ -486,33 +507,33 @@ def evening():
     done = completed_between(midnight, now())
     left = sorted([t for t in tasks if due_date(t) and due_date(t) <= d0], key=sort_key)
 
-    head = f"🌙 <b>{hello('Добрый вечер')}!</b>\nИтоги дня · {fmt_day(d0)}"
-    blocks = [head]
+    head = [f"<b>🌙 {hello('Добрый вечер')}!</b>",
+            f"<i>Итоги дня · {WD[d0.weekday()]}, {d0.day} {MONTHS[d0.month - 1]}</i>"]
+    try:
+        head.append("Завтра: " + weather_line(weather(), 1))
+    except Exception as e:
+        log("weather:", e)
+    blocks = ["\n".join(head)]
 
     if done:
-        b = [f"✅ <b>СДЕЛАНО · {len(done)}</b>"]
-        b += [f"▫️ {esc(clean(t.get('content', '')))}" for t in done[:10]]
+        lines = [task_line({"content": t.get("content", "")}) for t in done[:10]]
         if len(done) > 10:
-            b.append(f"…и ещё {len(done) - 10}")
+            lines.append(f"<i>…и ещё {len(done) - 10}</i>")
+        blocks.append(f"<b>✅ СДЕЛАНО · {len(done)}</b>\n" + quote(lines))
     else:
-        b = ["✅ <b>СДЕЛАНО</b>", "Сегодня ничего не отмечено"]
-    blocks.append("\n".join(b))
+        blocks.append("✅ Сделано: пока ничего не отмечено")
 
     if d0.weekday() == 6:
         blocks.append(weekly_stats(d0))
 
-    try:
-        blocks.append(f"<i>Завтра:</i> {weather_line(weather(), 1)}")
-    except Exception as e:
-        log("weather:", e)
-
     if not left:
-        blocks.append("🎉 <b>Все дела на сегодня закрыты!</b>")
+        blocks.append("🎉 Все дела на сегодня закрыты")
         send("\n\n".join(blocks))
         return
 
-    blocks.append(f"⏳ <b>ОСТАЛОСЬ · {len(left)}</b>"
-                  "\nНажми на дело, чтобы оставить его на месте (✖️).\nОтмеченные ✅ перенесу на завтра.")
+    # сами дела показаны кнопками ниже, отдельным списком не дублируем
+    blocks.append(f"<b>⏳ ОСТАЛОСЬ · {len(left)}</b>\n"
+                  "<i>Отмеченное ✅ перенесу на завтра. Нажми на дело, чтобы оставить его на месте ✖️</i>")
     shown = left[:40]
     kb = [[{"text": "✅ " + short(t["content"]), "callback_data": "t:" + t["id"]}] for t in shown]
     kb.append([{"text": "➡️ Перенести на завтра", "callback_data": "go:" + d0.isoformat()}])
@@ -540,13 +561,9 @@ def weekly_stats(d0):
             per[dt.weekday()] += 1
     total = sum(per)
     top = max(per) or 1
-    lines = [f"📊 <b>НЕДЕЛЯ · {total} {plural(total, 'дело', 'дела', 'дел')}</b>"]
-    rows = []
-    for i, n in enumerate(per):
-        bar = "█" * round(n / top * 8) if n else "·"
-        rows.append(f"{WD_SHORT[i]} {bar} {n}")
-    lines.append("<code>" + "\n".join(rows) + "</code>")
-    return "\n".join(lines)
+    rows = [f"<code>{WD_SHORT[i]} {('█' * round(n / top * 8)) if n else '·':<8} {n}</code>"
+            for i, n in enumerate(per)]
+    return f"<b>📊 НЕДЕЛЯ · {total} {plural(total, 'дело', 'дела', 'дел')}</b>\n" + quote(rows)
 
 
 # ---------- Обработка кнопок ----------
@@ -619,7 +636,7 @@ def handle_callback(cq):
     if data == "no":
         tg("editMessageReplyMarkup", chat_id=TG_CHAT, message_id=msg["message_id"],
            reply_markup={"inline_keyboard": []})
-        send("👌 Ничего не переношу, всё осталось на своих местах.")
+        send("<b>👌 НИЧЕГО НЕ ПЕРЕНОШУ</b>\n<i>Все дела остались на своих местах</i>")
         tg("answerCallbackQuery", callback_query_id=cq["id"], text="Оставил как есть")
         return True
 
@@ -630,12 +647,15 @@ def handle_callback(cq):
                if btn.get("callback_data", "").startswith("t:") and btn["text"].startswith("✅")]
         moved, skipped = reschedule(ids, target)
         word = "завтра" if target == today() + timedelta(days=1) else "сегодня" if target == today() else fmt_day(target)
-        note = f"➡️ Перенёс на {word} ({fmt_day(target)}): <b>{moved}</b>"
+        note = f"<b>➡️ ПЕРЕНЁС НА {word.upper()} · {moved}</b>\n<i>{fmt_long(target)}</i>"
         kept = sum(1 for row in kb for b in row if b.get("callback_data", "").startswith("t:")) - len(ids)
+        extra = []
         if kept:
-            note += f"\nОставил на месте: {kept}"
+            extra.append(f"Оставил на месте: <code>{kept}</code>")
         if skipped:
-            note += f"\nУже сделано или сдвинуто вручную: {skipped}"
+            extra.append(f"Уже сделано или сдвинуто вручную: <code>{skipped}</code>")
+        if extra:
+            note += "\n" + quote(extra)
         tg("editMessageReplyMarkup", chat_id=TG_CHAT, message_id=msg["message_id"],
            reply_markup={"inline_keyboard": []})
         send(note + "\n\nСпокойной ночи 🌙")
