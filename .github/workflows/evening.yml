@@ -25,6 +25,11 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TODOIST_TOKEN: ${{ secrets.TODOIST_TOKEN }}
+          MAILRU_EMAIL: ${{ secrets.MAILRU_EMAIL }}
+          MAILRU_APP_PASSWORD: ${{ secrets.MAILRU_APP_PASSWORD }}
+          MAIL_VIP: ${{ vars.MAIL_VIP }}
+          MAIL_BLOCK: ${{ vars.MAIL_BLOCK }}
+          MAIL_KEYWORDS: ${{ vars.MAIL_KEYWORDS }}
           EVENING_AT: "22:00"
           NO_WAIT: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
         run: python bot.py evening
