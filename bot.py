@@ -380,46 +380,97 @@ def body_text(raw):
         return ""
 
 
+def spam_folder(m):
+    """Имя папки «Спам» на сервере (по флагу \Junk или по названию)."""
+    typ, data = m.list()
+    for line in data or []:
+        line = line.decode(errors="ignore") if isinstance(line, bytes) else str(line)
+        mt = re.match(r'\((?P<flags>[^)]*)\) "(?P<sep>[^"]*)" (?P<name>.+)$', line)
+        if not mt:
+            continue
+        name = mt.group("name").strip()
+        bare = name.strip('"')
+        # «Спам» в IMAP-кодировке modified UTF-7 = &BCEEPwQwBDw-
+        if "\\junk" in mt.group("flags").lower() or bare.lower() in ("spam", "junk", "&bcEepwqwbdw-".lower()):
+            return name
+    return None
+
+
+def spam_is_relevant(msg, body):
+    """Из спама достаём только то, что явно про вуз или олимпиаду, без рекламы."""
+    tags = mail_tags(msg, body)
+    addr = email.utils.parseaddr(_h(msg, "From"))[1].lower()
+    domain = addr.split("@")[-1]
+    if _domain_match(domain, UNI_DOMAINS) or _domain_match(domain, MAIL_VIP):
+        return True  # настоящий адрес вуза/олимпиады
+    if PROMO_RE.search(_h(msg, "Subject")) or PROMO_RE.search(body[:1500]):
+        return False  # курсы «подготовка к олимпиаде со скидкой» и т.п.
+    return bool({"олимп", "приглаш"} & set(tags)) or bool(STRONG_RE.search(_h(msg, "Subject")))
+
+
+def scan_folder(m, folder, since, spam=False):
+    typ, _ = m.select(folder, readonly=True)  # readonly: письма остаются непрочитанными
+    if typ != "OK":
+        return []
+    crit = "(UNSEEN SINCE {})".format((since - timedelta(days=1)).strftime("%d-%b-%Y"))
+    typ, data = m.search(None, crit)
+    ids = data[0].split() if data and data[0] else []
+    out = []
+    for i in ids[-(100 if spam else 200):]:
+        typ, resp = m.fetch(i, "(RFC822.SIZE BODY.PEEK[HEADER])")
+        raw = next((p[1] for p in resp if isinstance(p, tuple)), b"")
+        meta = b" ".join(p[0] if isinstance(p, tuple) else p for p in resp if p)
+        size = int((re.search(rb"RFC822\.SIZE (\d+)", meta) or [0, b"0"])[1])
+        h = email.message_from_bytes(raw, policy=email.policy.default)
+        try:
+            when = email.utils.parsedate_to_datetime(h.get("Date"))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+        except Exception:
+            when = None
+        if when and when < since:
+            continue
+        try:
+            addr = email.utils.parseaddr(_h(h, "From"))[1].lower()
+            if _domain_match(addr.split("@")[-1], MAIL_BLOCK) or addr in MAIL_BLOCK:
+                continue
+            body = ""
+            # если по заголовкам письмо рядовое, заглядываем в текст (не больше 1 МБ)
+            if (spam or not mail_is_important(h)) and size < 1_000_000:
+                typ, full = m.fetch(i, "(BODY.PEEK[])")
+                body = body_text(next((p[1] for p in full if isinstance(p, tuple)), b""))
+            if spam:
+                if not spam_is_relevant(h, body):
+                    continue
+            elif not mail_is_important(h, body):
+                continue
+            tags = mail_tags(h, body)
+            if spam:
+                tags = ["из спама"] + [t for t in tags if t != "ответ"]
+        except Exception as e:  # кривое письмо не должно ронять сводку
+            log("mail error:", e)
+            continue
+        name, addr = email.utils.parseaddr(_h(h, "From"))
+        out.append({"from": name or addr, "subject": _h(h, "Subject") or "(без темы)",
+                    "when": when, "tags": tags})
+    return out
+
+
 def important_mail(since):
     if not (MAIL_USER and MAIL_PASS):
         return None
     m = imaplib.IMAP4_SSL("imap.mail.ru", 993)
     try:
         m.login(MAIL_USER, MAIL_PASS)
-        m.select("INBOX", readonly=True)  # readonly: письма остаются непрочитанными
-        crit = "(UNSEEN SINCE {})".format((since - timedelta(days=1)).strftime("%d-%b-%Y"))
-        typ, data = m.search(None, crit)
-        ids = data[0].split() if data and data[0] else []
-        out = []
-        for i in ids[-200:]:
-            typ, resp = m.fetch(i, "(RFC822.SIZE BODY.PEEK[HEADER])")
-            raw = next((p[1] for p in resp if isinstance(p, tuple)), b"")
-            meta = b" ".join(p[0] if isinstance(p, tuple) else p for p in resp if p)
-            size = int((re.search(rb"RFC822\.SIZE (\d+)", meta) or [0, b"0"])[1])
-            h = email.message_from_bytes(raw, policy=email.policy.default)
-            try:
-                when = email.utils.parsedate_to_datetime(h.get("Date"))
-                if when.tzinfo is None:
-                    when = when.replace(tzinfo=timezone.utc)
-            except Exception:
-                when = None
-            if when and when < since:
-                continue
-            try:
-                # если по заголовкам письмо рядовое, заглядываем в текст (не больше 1 МБ)
-                body = ""
-                if not mail_is_important(h) and size < 1_000_000:
-                    typ, full = m.fetch(i, "(BODY.PEEK[])")
-                    body = body_text(next((p[1] for p in full if isinstance(p, tuple)), b""))
-                if not mail_is_important(h, body):
-                    continue
-                tags = mail_tags(h, body)
-            except Exception as e:  # кривое письмо не должно ронять сводку
-                log("mail error:", e)
-                continue
-            name, addr = email.utils.parseaddr(_h(h, "From"))
-            out.append({"from": name or addr, "subject": _h(h, "Subject") or "(без темы)",
-                        "when": when, "tags": tags})
+        out = scan_folder(m, "INBOX", since)
+        try:
+            sf = spam_folder(m)
+            if sf:
+                out += scan_folder(m, sf, since, spam=True)
+            else:
+                log("папка Спам не найдена")
+        except Exception as e:
+            log("spam:", e)
         # сначала письма с метками (ВУЗ, олимпиады, приглашения, ответы), внутри по времени
         out.sort(key=lambda x: x["when"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
         out.sort(key=lambda x: not x["tags"])
