@@ -41,11 +41,8 @@ MAIL_PASS = os.environ.get("MAILRU_APP_PASSWORD", "")
 
 # Отправители, которые показываются всегда (адреса или домены через запятую)
 MAIL_VIP = [s.strip().lower() for s in os.environ.get("MAIL_VIP", "").split(",") if s.strip()]
-# Слова в теме, при которых письмо показывается даже от робота (если это не реклама)
-MAIL_KEYWORDS = [s.strip().lower() for s in os.environ.get(
-    "MAIL_KEYWORDS",
-    "олимпиад,пробник,призёр,призер,победител,диплом,результаты участ,пропуск,госуслуг",
-).split(",") if s.strip()]
+# Свои слова через запятую: письмо с ними в теме или тексте показывается всегда
+MAIL_KEYWORDS = [s.strip().lower() for s in os.environ.get("MAIL_KEYWORDS", "").split(",") if s.strip()]
 # Отправители, которые не показываются никогда
 MAIL_BLOCK = [s.strip().lower() for s in os.environ.get("MAIL_BLOCK", "").split(",") if s.strip()]
 
@@ -292,32 +289,95 @@ BULK_MAILERS = ("mailchimp", "sendpulse", "unisender", "sendsay", "dashamail", "
                 "esputnik", "mailganer", "sendgrid", "mailgun", "amazonses", "mandrill")
 
 
-def mail_is_important(msg):
-    def h(name, default=""):
-        v = msg.get(name)
-        return str(v) if v is not None else default
+# Что показывать ВСЕГДА, даже если письмо похоже на рассылку:
+# университеты, олимпиады, приглашения и ответы на мои письма.
+UNI_DOMAINS = (
+    "edu", "msu.ru", "spbu.ru", "hse.ru", "fa.ru", "kpfu.ru", "mipt.ru", "ranepa.ru", "mgimo.ru",
+    "bashedu.ru", "uust.ru", "bspu.ru", "ugatu.su", "urfu.ru", "nsu.ru", "tsu.ru", "rudn.ru",
+    "mpgu.su", "mpgu.edu", "rsuh.ru", "spbstu.ru", "itmo.ru", "herzen.spb.ru", "sfu-kras.ru",
+    "susu.ru", "psu.ru", "pstu.ru", "sgu.ru", "vsu.ru", "unn.ru", "kfu.ru", "dvfu.ru", "misis.ru",
+    "bmstu.ru", "mephi.ru", "guu.ru", "rea.ru", "pgu.ru", "ssau.ru", "omsu.ru", "isu.ru", "utmn.ru",
+    "olimpiada.ru", "rsr-olymp.ru", "vsosh.ru", "olymp.ru", "sirius.online", "siriusolymp.ru",
+    "talantiuspeh.ru", "obrnadzor.gov.ru", "minobrnauki.gov.ru", "edu.gov.ru",
+)
+UNI_NAME_RE = re.compile(r"университет|институт|академи|колледж|университ|приёмн|приемн|"
+                         r"деканат|кафедр|абитуриент|олимпиад|univ|college|admission", re.I)
+STRONG_RE = re.compile(
+    r"олимпиад|олимп\b|всош|рсош|перечнев|пробник|отборочн|заключительн|региональн\w* этап|"
+    r"муниципальн\w* этап|призёр|призер|победител|диплом|апелляц|результат\w* (участ|олимп|этап)|"
+    r"приглаш|пригласительн|invitation|invite|"
+    r"университет|вуз\b|абитуриент|поступлен|приёмн\w* комисс|приемн\w* комисс|зачислен|"
+    r"собеседован|интервью|день открытых дверей|регистрац\w* (на|участ)|"
+    r"сириус|талант и успех|olymp", re.I)
+REPLY_RE = re.compile(r"^\s*((re|aw|отв|ответ)\s*(\[\d+\])?\s*:|re\s*\(\d+\)\s*:)", re.I)
 
-    name, addr = email.utils.parseaddr(h("From"))
-    addr = addr.lower()
+
+def _h(msg, name):
+    v = msg.get(name)
+    return str(v) if v is not None else ""
+
+
+def _domain_match(domain, items):
+    return any(domain == x or domain.endswith("." + x) for x in items)
+
+
+def mail_tags(msg, body=""):
+    """Метки «обязательно показать»: ВУЗ, олимп, приглаш, ответ. Пусто, если письмо обычное."""
+    name, addr = email.utils.parseaddr(_h(msg, "From"))
+    domain = addr.lower().split("@")[-1]
+    subj = _h(msg, "Subject")
+    text = f"{subj}\n{body[:5000]}"
+    tags = []
+    if _domain_match(domain, UNI_DOMAINS) or UNI_NAME_RE.search(name or ""):
+        tags.append("ВУЗ")
+    if re.search(r"олимп|всош|рсош|пробник|olymp|этап", text, re.I):
+        tags.append("олимп")
+    if re.search(r"приглаш|пригласительн|invitation|invite", text, re.I):
+        tags.append("приглаш")
+    if REPLY_RE.match(subj) or _h(msg, "In-Reply-To"):
+        tags.append("ответ")
+    if not tags and any(k in text.lower() for k in MAIL_KEYWORDS):
+        tags.append("важно")
+    # общие слова (победитель, результат...) без явной связи с вузом или олимпиадой
+    # засчитываем, только если это не реклама и не «розыгрыш»
+    if not tags and STRONG_RE.search(text) and not PROMO_RE.search(text[:600]):
+        tags.append("важно")
+    return tags
+
+
+def mail_is_important(msg, body=""):
+    addr = email.utils.parseaddr(_h(msg, "From"))[1].lower()
     domain = addr.split("@")[-1]
-    subj = h("Subject")
-    if any(b == addr or b == domain or domain.endswith("." + b) for b in MAIL_BLOCK):
+    if _domain_match(domain, MAIL_BLOCK) or addr in MAIL_BLOCK:
         return False
-    if any(v == addr or v == domain or domain.endswith("." + v) for v in MAIL_VIP):
+    if _domain_match(domain, MAIL_VIP) or addr in MAIL_VIP or mail_tags(msg, body):
         return True
-    keyword = any(k in subj.lower() for k in MAIL_KEYWORDS) and not PROMO_RE.search(subj)
     bulk = (
-        h("List-Unsubscribe") or h("List-Id") or h("List-Post")
-        or (h("Precedence", "").lower() in ("bulk", "list", "junk"))
-        or any(m in (h("X-Mailer", "") + h("Message-ID", "") + h("Return-Path", "")).lower()
+        _h(msg, "List-Unsubscribe") or _h(msg, "List-Id") or _h(msg, "List-Post")
+        or _h(msg, "Precedence").lower() in ("bulk", "list", "junk")
+        or any(m in (_h(msg, "X-Mailer") + _h(msg, "Message-ID") + _h(msg, "Return-Path")).lower()
                for m in BULK_MAILERS)
-        or h("X-Campaign") or h("X-Campaign-Id") or h("X-MC-User")
+        or _h(msg, "X-Campaign") or _h(msg, "X-Campaign-Id") or _h(msg, "X-MC-User")
     )
-    auto = h("Auto-Submitted", "no").lower() not in ("", "no")
+    auto = _h(msg, "Auto-Submitted").lower() not in ("", "no")
     robot = bool(ROBOT_RE.match(addr))
-    if keyword:
-        return True
     return not (bulk or auto or robot)
+
+
+def body_text(raw):
+    """Текст письма (plain или html без тегов) для поиска ключевых слов."""
+    try:
+        m = email.message_from_bytes(raw, policy=email.policy.default)
+        part = m.get_body(preferencelist=("plain", "html"))
+        if part is None:
+            return ""
+        t = part.get_content()
+        if part.get_content_subtype() == "html":
+            t = re.sub(r"(?s)<(script|style).*?</\1>", " ", t)
+            t = html.unescape(re.sub(r"<[^>]+>", " ", t))
+        return re.sub(r"\s+", " ", t)
+    except Exception:
+        return ""
 
 
 def important_mail(since):
@@ -332,8 +392,10 @@ def important_mail(since):
         ids = data[0].split() if data and data[0] else []
         out = []
         for i in ids[-200:]:
-            typ, msg = m.fetch(i, "(BODY.PEEK[HEADER])")
-            raw = next((p[1] for p in msg if isinstance(p, tuple)), b"")
+            typ, resp = m.fetch(i, "(RFC822.SIZE BODY.PEEK[HEADER])")
+            raw = next((p[1] for p in resp if isinstance(p, tuple)), b"")
+            meta = b" ".join(p[0] if isinstance(p, tuple) else p for p in resp if p)
+            size = int((re.search(rb"RFC822\.SIZE (\d+)", meta) or [0, b"0"])[1])
             h = email.message_from_bytes(raw, policy=email.policy.default)
             try:
                 when = email.utils.parsedate_to_datetime(h.get("Date"))
@@ -344,21 +406,49 @@ def important_mail(since):
             if when and when < since:
                 continue
             try:
-                if not mail_is_important(h):
+                # если по заголовкам письмо рядовое, заглядываем в текст (не больше 1 МБ)
+                body = ""
+                if not mail_is_important(h) and size < 1_000_000:
+                    typ, full = m.fetch(i, "(BODY.PEEK[])")
+                    body = body_text(next((p[1] for p in full if isinstance(p, tuple)), b""))
+                if not mail_is_important(h, body):
                     continue
-            except Exception as e:  # кривой заголовок не должен ронять сводку
-                log("mail header error:", e)
+                tags = mail_tags(h, body)
+            except Exception as e:  # кривое письмо не должно ронять сводку
+                log("mail error:", e)
                 continue
-            name, addr = email.utils.parseaddr(str(h.get("From", "")))
-            out.append({"from": name or addr, "subject": str(h.get("Subject", "") or "(без темы)"),
-                        "when": when})
+            name, addr = email.utils.parseaddr(_h(h, "From"))
+            out.append({"from": name or addr, "subject": _h(h, "Subject") or "(без темы)",
+                        "when": when, "tags": tags})
+        # сначала письма с метками (ВУЗ, олимпиады, приглашения, ответы), внутри по времени
         out.sort(key=lambda x: x["when"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        out.sort(key=lambda x: not x["tags"])
         return out
     finally:
         try:
             m.logout()
         except Exception:
             pass
+
+
+def mail_block(since, limit=6):
+    """Блок почты по шаблону; пустой раздел сжимается в одну строку."""
+    try:
+        mails = important_mail(since)
+    except Exception as e:
+        log("mail:", e)
+        return "✉️ Почта: проверить не удалось"
+    if mails is None:
+        return None
+    if not mails:
+        return "✉️ Почта: важного нет"
+    lines = []
+    for x in mails[:limit]:
+        plate = "".join(f"<code>{t}</code> " for t in x["tags"])
+        lines.append(f"{plate}<b>{esc(x['from'])}</b>\n      {esc(x['subject'])}")
+    if len(mails) > limit:
+        lines.append(f"<i>…и ещё {len(mails) - limit}</i>")
+    return f"<b>✉️ ПОЧТА · {len(mails)}</b>\n" + quote(lines)
 
 
 # ---------- Утро ----------
@@ -457,18 +547,9 @@ def morning():
     else:
         blocks.append("🎯 Дедлайнов в ближайшие две недели нет")
 
-    try:
-        mails = important_mail(now() - timedelta(hours=24))
-        if mails:
-            lines = [f"<b>{esc(x['from'])}</b>\n      {esc(x['subject'])}" for x in mails[:6]]
-            if len(mails) > 6:
-                lines.append(f"<i>…и ещё {len(mails) - 6}</i>")
-            blocks.append(f"<b>✉️ ПОЧТА · {len(mails)}</b>\n" + quote(lines))
-        elif mails is not None:
-            blocks.append("✉️ Почта: важного нет")
-    except Exception as e:
-        log("mail:", e)
-        blocks.append("✉️ Почта: проверить не удалось")
+    mb = mail_block(now() - timedelta(hours=24))
+    if mb:
+        blocks.append(mb)
 
     send("\n\n".join(blocks))
 
@@ -525,6 +606,12 @@ def evening():
 
     if d0.weekday() == 6:
         blocks.append(weekly_stats(d0))
+
+    # почта, пришедшая после утренней сводки
+    h, mnt = map(int, MORNING_AT.split(":"))
+    mb = mail_block(datetime(d0.year, d0.month, d0.day, h, mnt, tzinfo=TZ))
+    if mb:
+        blocks.append(mb)
 
     if not left:
         blocks.append("🎉 Все дела на сегодня закрыты")
