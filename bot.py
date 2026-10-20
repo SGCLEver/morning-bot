@@ -381,7 +381,7 @@ def body_text(raw):
 
 
 def spam_folder(m):
-    """Имя папки «Спам» на сервере (по флагу \Junk или по названию)."""
+    """Имя папки «Спам» на сервере (по флагу Junk или по названию)."""
     typ, data = m.list()
     for line in data or []:
         line = line.decode(errors="ignore") if isinstance(line, bytes) else str(line)
