@@ -424,9 +424,9 @@ def morning():
             b.append(f"…и ещё {len(overdue) - 7}")
     blocks.append("\n".join(b))
 
-    # Дедлайны на 30 дней вперёд
+    # Дедлайны на 14 дней вперёд
     dls = sorted([(deadline_of(t), t) for t in tasks
-                  if deadline_of(t) and 0 <= (deadline_of(t) - d0).days <= 30], key=lambda x: x[0])
+                  if deadline_of(t) and 0 <= (deadline_of(t) - d0).days <= 14], key=lambda x: x[0])
     if dls:
         b = ["🎯 <b>ДЕДЛАЙНЫ</b>"]
         for dl, t in dls[:6]:
