@@ -183,11 +183,21 @@ def due_time(task):
 RU_MONTH_RE = "|".join(m[:3] for m in MONTHS)
 
 
+def is_dedl(task):
+    """Задание с пометкой ДЕДЛ: дата в Todoist = день публикации, сдать позже."""
+    return "ДЕДЛ" in (task.get("content") or "").upper()
+
+
 def deadline_of(task):
-    """Настоящий дедлайн: поле deadline Todoist, либо «Дедлайн: 24 октября 2026» в описании."""
+    """Когда сдавать.
+    ДЕДЛ: дата задачи = публикация; пробник сдать в тот же день, остальное через 3 дня.
+    Иначе: поле deadline Todoist или «Дедлайн: 24 октября 2026» в описании."""
     dl = (task.get("deadline") or {}).get("date")
     if dl:
         return date.fromisoformat(dl[:10])
+    if is_dedl(task) and due_date(task):
+        days = 0 if "пробник" in (task.get("content") or "").lower() else 3
+        return due_date(task) + timedelta(days=days)
     m = re.search(r"[Дд]едлайн[:\s]+(\d{1,2})\s+(" + RU_MONTH_RE + r")[а-я]*\s*(\d{4})?",
                   task.get("description") or "")
     if m:
@@ -197,8 +207,6 @@ def deadline_of(task):
             return date(year, month, int(m.group(1)))
         except ValueError:
             return None
-    if "ДЕДЛ" in (task.get("content") or "").upper():
-        return due_date(task)
     return None
 
 
@@ -211,7 +219,7 @@ def load_todoist():
 
 def task_line(t, show_date=False):
     """Строка задачи по шаблону: моноширинная плашка (время, ДЗ, дата) и название."""
-    name = clean(t["content"])
+    name = strip_dedl(t["content"])
     tags = []
     if show_date:
         d = due_date(t)
@@ -573,15 +581,32 @@ def morning():
         log("weather:", e)
     blocks = ["\n".join(head)]
 
+    # обычные дела на сегодня + ДЕДЛ-задания, которые сегодня публикуют
     todays = sorted([t for t in tasks if due_date(t) == d0], key=sort_key)
     if todays:
-        blocks.append(f"<b>📋 СЕГОДНЯ · {len(todays)}</b>\n" + quote([task_line(t) for t in todays]))
+        lines = []
+        for t in todays:
+            if is_dedl(t):
+                dl = deadline_of(t)
+                when = "сдать сегодня" if dl == d0 else f"сдать до {fmt_day(dl)}"
+                lines.append(f"<code>вышло</code> {esc(strip_dedl(t['content']))} · {when}")
+            else:
+                lines.append(task_line(t))
+        blocks.append(f"<b>📋 СЕГОДНЯ · {len(todays)}</b>\n" + quote(lines))
     else:
         blocks.append("📋 Сегодня: дел нет")
 
-    overdue = sorted([t for t in tasks if due_date(t) and due_date(t) < d0], key=sort_key)
+    # хвосты: обычные просроченные + ДЕДЛ, у которых дедлайн уже прошёл
+    overdue = sorted([t for t in tasks if due_date(t) and (
+        (not is_dedl(t) and due_date(t) < d0) or (is_dedl(t) and deadline_of(t) < d0))], key=sort_key)
     if overdue:
-        lines = [task_line(t, show_date=True) for t in overdue[:7]]
+        lines = []
+        for t in overdue[:7]:
+            if is_dedl(t):
+                dl = deadline_of(t)
+                lines.append(f"<code>срок {dl.day:02d}.{dl.month:02d}</code> {esc(strip_dedl(t['content']))}")
+            else:
+                lines.append(task_line(t, show_date=True))
         if len(overdue) > 7:
             lines.append(f"<i>…и ещё {len(overdue) - 7}</i>")
         blocks.append(f"<b>⚠️ ХВОСТЫ · {len(overdue)}</b>\n" + quote(lines))
@@ -592,8 +617,10 @@ def morning():
         lines = []
         for dl, t in dls[:6]:
             left = (dl - d0).days
-            lines.append(f"{urgency(left)} {esc(strip_dedl(t['content']))}\n"
-                         f"      {left_plate(left)} · {fmt_day(dl)}")
+            line = f"{urgency(left)} {esc(strip_dedl(t['content']))}\n      {left_plate(left)} · {fmt_day(dl)}"
+            if is_dedl(t) and due_date(t) > d0:
+                line += " · в день выхода" if due_date(t) == dl else f" · выйдет {fmt_day(due_date(t))}"
+            lines.append(line)
         blocks.append("<b>🎯 ДЕДЛАЙНЫ</b>\n" + quote(lines))
     else:
         blocks.append("🎯 Дедлайнов в ближайшие две недели нет")
@@ -637,7 +664,11 @@ def evening():
     midnight = datetime(d0.year, d0.month, d0.day, tzinfo=TZ)
     tasks, projects, sections = load_todoist()
     done = completed_between(midnight, now())
-    left = sorted([t for t in tasks if due_date(t) and due_date(t) <= d0], key=sort_key)
+    # ДЕДЛ-задания не переносим: их дата = день публикации, от неё считается срок сдачи
+    left = sorted([t for t in tasks if due_date(t) and due_date(t) <= d0 and not is_dedl(t)], key=sort_key)
+    soon = sorted([(deadline_of(t), t) for t in tasks
+                   if deadline_of(t) and 0 <= (deadline_of(t) - d0).days <= 1
+                   and due_date(t) and due_date(t) <= d0], key=lambda x: x[0])
 
     head = [f"<b>🌙 {hello('Добрый вечер')}!</b>",
             f"<i>Итоги дня · {WD[d0.weekday()]}, {d0.day} {MONTHS[d0.month - 1]}</i>"]
@@ -654,6 +685,11 @@ def evening():
         blocks.append(f"<b>✅ СДЕЛАНО · {len(done)}</b>\n" + quote(lines))
     else:
         blocks.append("✅ Сделано: пока ничего не отмечено")
+
+    if soon:
+        lines = [f"🔴 {esc(strip_dedl(t['content']))}\n      {left_plate((dl - d0).days)} · {fmt_day(dl)}"
+                 for dl, t in soon]
+        blocks.append("<b>🎯 СКОРО СДАВАТЬ</b>\n" + quote(lines))
 
     if d0.weekday() == 6:
         blocks.append(weekly_stats(d0))
@@ -814,7 +850,7 @@ def reschedule(ids, target):
             skipped += 1
             continue
         due = t.get("due")
-        if t.get("checked") or not due or due_date(t) >= target:
+        if t.get("checked") or not due or due_date(t) >= target or is_dedl(t):
             skipped += 1
             continue
         old = due["date"]
