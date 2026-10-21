@@ -217,23 +217,34 @@ def load_todoist():
     return tasks, projects, sections
 
 
+ONLINE_RE = re.compile(r"онлайн|хард|вебинар|zoom|зум|конференц|созвон|трансляц|стрим", re.I)
+
+
+def is_online(t):
+    return bool(ONLINE_RE.search(t.get("content") or ""))
+
+
 def task_line(t, show_date=False):
-    """Строка задачи по шаблону: моноширинная плашка (время, ДЗ, дата) и название."""
+    """Строка задачи по шаблону: моноширинная плашка (время, ДЗ, дата) и название.
+    Время выделено жирной плашкой и значком: 🎥 онлайн-занятие, ⏰ остальное."""
     name = strip_dedl(t["content"])
     tags = []
     if show_date:
         d = due_date(t)
-        tags.append(f"{WD_SHORT[d.weekday()]} {d.day:02d}.{d.month:02d}")
-    if due_time(t):
-        tags.append(due_time(t))
+        tags.append(f"<code>{WD_SHORT[d.weekday()]} {d.day:02d}.{d.month:02d}</code>")
+    tm = due_time(t)
+    if tm:
+        tags.append(f"{'🎥' if is_online(t) else '⏰'} <b><code>{tm}</code></b>")
     m = re.match(r"^ДЗ\b[\s:.,-]*", name)
     if m:
-        tags.append("ДЗ")
+        tags.append("<code>ДЗ</code>")
         name = name[m.end():] or name
     name = esc(name)
+    if tm and is_online(t):
+        name = f"<b>{name}</b>"
     if t.get("priority") == 4:
         name = "❗️" + name
-    plate = " ".join(f"<code>{x}</code>" for x in tags)
+    plate = " ".join(tags)
     return f"{plate} {name}" if plate else name
 
 
@@ -686,6 +697,11 @@ def evening():
     else:
         blocks.append("✅ Сделано: пока ничего не отмечено")
 
+    tomorrow = d0 + timedelta(days=1)
+    timed = sorted([t for t in tasks if due_date(t) == tomorrow and due_time(t)], key=sort_key)
+    if timed:
+        blocks.append("<b>📅 ЗАВТРА ПО ВРЕМЕНИ</b>\n" + quote([task_line(t) for t in timed]))
+
     if soon:
         lines = [f"🔴 {esc(strip_dedl(t['content']))}\n      {left_plate((dl - d0).days)} · {fmt_day(dl)}"
                  for dl, t in soon]
@@ -703,6 +719,8 @@ def evening():
     if not left:
         blocks.append("🎉 Все дела на сегодня закрыты")
         send("\n\n".join(blocks))
+        if d0.weekday() == 6:
+            send(week_plan(tasks, d0 + timedelta(days=1)))
         return
 
     # сами дела показаны кнопками ниже, отдельным списком не дублируем
@@ -713,6 +731,8 @@ def evening():
     kb.append([{"text": "➡️ Перенести на завтра", "callback_data": "go:" + d0.isoformat()}])
     kb.append([{"text": "Ничего не переносить", "callback_data": "no"}])
     msg = send("\n\n".join(blocks), kb)
+    if d0.weekday() == 6:
+        send(week_plan(tasks, d0 + timedelta(days=1)))
 
     # Ждём нажатия до полуночи (если позже, обработает утренний запуск)
     end = datetime(d0.year, d0.month, d0.day, tzinfo=TZ) + timedelta(hours=EVENING_WAIT_UNTIL_HOUR)
@@ -721,6 +741,51 @@ def evening():
     while now() < end:
         if process_updates(wait=True, until=end, stop_on_msg=msg["message_id"]):
             break
+
+
+def week_plan(tasks, monday):
+    """План на неделю: нагрузка по дням, время онлайн-занятий, выход и сдача ДЕДЛ-заданий."""
+    days = [monday + timedelta(days=i) for i in range(7)]
+    rows, load = [], {}
+    for d in days:
+        plain = [t for t in tasks if due_date(t) == d and not is_dedl(t)]
+        out = [t for t in tasks if is_dedl(t) and due_date(t) == d]
+        due = [t for t in tasks if is_dedl(t) and deadline_of(t) == d]
+        n = len(plain) + len(out)
+        load[d] = n
+        parts = []
+        if n:
+            parts.append(f"{n} {plural(n, 'дело', 'дела', 'дел')}")
+        for t in sorted([t for t in plain if due_time(t) and is_online(t)], key=sort_key):
+            parts.append(f"🎥 <b><code>{due_time(t)}</code></b>")
+        for t in out:
+            same = deadline_of(t) == d
+            parts.append(f"{'🎯' if same else '📤'} {esc(strip_dedl(t['content']))}"
+                         + (" (выйдет и сдать в тот же день)" if same else " выйдет"))
+        for t in due:
+            if due_date(t) != d:
+                parts.append(f"🎯 сдать {esc(strip_dedl(t['content']))}")
+        rows.append((d, parts))
+    top = max(load.values()) if load else 0
+    lines = []
+    for d, parts in rows:
+        fire = "🔥 " if load[d] >= 5 or (load[d] >= 4 and load[d] == top) else ""
+        body = " · ".join(parts) if parts else "<i>свободно</i>"
+        lines.append(f"<code>{WD_SHORT[d.weekday()]} {d.day:02d}.{d.month:02d}</code> {fire}{body}")
+    free = [WD_SHORT[d.weekday()] for d in days if not load[d]]
+    busy = [WD_SHORT[d.weekday()] for d in days if load[d] and load[d] == top]
+    summary = []
+    if top:
+        summary.append(f"Самый загруженный: {', '.join(busy)}")
+    if free:
+        summary.append(f"свободно: {', '.join(free)}")
+    sunday = days[-1]
+    head = (f"<b>🗓 ПЛАН НЕДЕЛИ</b>\n<i>{monday.day} {MONTHS[monday.month - 1]} – "
+            f"{sunday.day} {MONTHS[sunday.month - 1]}</i>")
+    text = head + "\n" + quote(lines)
+    if summary:
+        text += "\n<i>" + ". ".join(summary).capitalize() + "</i>"
+    return text
 
 
 def weekly_stats(d0):
@@ -882,6 +947,33 @@ def reschedule(ids, target):
     return moved, skipped
 
 
+REMIND_BEFORE = int(os.environ.get("REMIND_BEFORE", "30"))  # минут
+REMIND_EVERY = int(os.environ.get("REMIND_EVERY", "10"))    # как часто будит cron-job.org
+REMIND_ALL = os.environ.get("REMIND_ALL") == "1"            # 1 = про все дела со временем
+
+
+def remind():
+    """Запускается каждые REMIND_EVERY минут. Напоминает об онлайн-занятиях,
+    которые начнутся примерно через REMIND_BEFORE минут. Окно привязано к слоту
+    расписания, поэтому одно занятие попадает ровно в один запуск."""
+    n = now()
+    slot = n.replace(second=0, microsecond=0) - timedelta(minutes=n.minute % REMIND_EVERY)
+    lo = slot + timedelta(minutes=REMIND_BEFORE - REMIND_EVERY / 2)
+    hi = slot + timedelta(minutes=REMIND_BEFORE + REMIND_EVERY / 2)
+    d0 = today()
+    tasks = td_all("/tasks")
+    for t in sorted(tasks, key=sort_key):
+        if due_date(t) != d0 or not due_time(t) or not (REMIND_ALL or is_online(t)):
+            continue
+        h, m = map(int, due_time(t).split(":"))
+        start = datetime(d0.year, d0.month, d0.day, h, m, tzinfo=TZ)
+        if lo < start <= hi:
+            mins = max(1, round((start - n).total_seconds() / 60))
+            icon = "🎥" if is_online(t) else "⏰"
+            send(f"<b>{icon} ЧЕРЕЗ {mins} {plural(mins, 'МИНУТУ', 'МИНУТЫ', 'МИНУТ').upper()}</b>\n"
+                 + quote([task_line(t)]))
+
+
 def whoami():
     """Отвечает каждому, кто написал боту, его числовым ID (для секрета TELEGRAM_CHAT_ID)."""
     ups = tg("getUpdates", timeout=0, allowed_updates=["message"])
@@ -909,7 +1001,7 @@ def main():
     if missing:
         sys.exit("Не заданы секреты: " + ", ".join(missing))
     try:
-        {"morning": morning, "evening": evening}[mode]()
+        {"morning": morning, "evening": evening, "remind": remind}[mode]()
     except Exception as e:
         log("FATAL:", repr(e))
         try:
