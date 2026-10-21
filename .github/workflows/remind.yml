@@ -1,0 +1,32 @@
+name: Напоминание о занятии
+
+# Будит cron-job.org каждые 10 минут с 7:00 до 22:50 (Уфа).
+# Бот пишет, если онлайн-занятие начнётся примерно через 30 минут.
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "manual или cron"
+        default: manual
+
+concurrency:
+  group: remind
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Напомнить
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TODOIST_TOKEN: ${{ secrets.TODOIST_TOKEN }}
+          REMIND_BEFORE: "30"
+          REMIND_EVERY: "10"
+        run: python bot.py remind
