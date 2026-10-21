@@ -34,12 +34,13 @@ jobs:
       - name: Не отправлять дважды
         id: dup
         if: github.event_name == 'schedule' || inputs.source == 'cron'
+        continue-on-error: true   # если проверка сломается, сводка всё равно уйдёт
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           day=$(TZ=Asia/Yekaterinburg date +%Y-%m-%d)
           n=$(gh api "repos/${{ github.repository }}/actions/workflows/evening.yml/runs?created=>=${day}T00:00:00%2B05:00&per_page=50" \
-            --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.display_title == "auto") | select(.conclusion == "success" or .status == "in_progress")] | length')
+            --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.display_title == "auto") | select(.conclusion == "success" or .status == "in_progress")] | length') || n=0
           echo "already=$n" >> "$GITHUB_OUTPUT"
           [ "$n" = "0" ] || echo "Сегодня уже отправлено, пропускаю"
       - name: Итог дня
