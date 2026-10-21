@@ -190,13 +190,13 @@ def is_dedl(task):
 
 def deadline_of(task):
     """Когда сдавать.
-    ДЕДЛ: дата задачи = публикация; пробник сдать в тот же день, остальное через 3 дня.
+    ДЕДЛ: дата задачи = публикация; пробник сдать в тот же день, остальное через 2 дня (с запасом в день от реального срока в 3 дня).
     Иначе: поле deadline Todoist или «Дедлайн: 24 октября 2026» в описании."""
     dl = (task.get("deadline") or {}).get("date")
     if dl:
         return date.fromisoformat(dl[:10])
     if is_dedl(task) and due_date(task):
-        days = 0 if "пробник" in (task.get("content") or "").lower() else 3
+        days = 0 if "пробник" in (task.get("content") or "").lower() else 2
         return due_date(task) + timedelta(days=days)
     m = re.search(r"[Дд]едлайн[:\s]+(\d{1,2})\s+(" + RU_MONTH_RE + r")[а-я]*\s*(\d{4})?",
                   task.get("description") or "")
