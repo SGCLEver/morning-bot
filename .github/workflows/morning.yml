@@ -1,14 +1,22 @@
 name: Утренняя сводка
 
+# auto = плановый запуск (GitHub или внешний будильник cron-job.org), manual = проверка
+run-name: ${{ (github.event_name == 'schedule' || inputs.source == 'cron') && 'auto' || 'manual' }}
+
 on:
   schedule:
     # GitHub запускает расписание с опозданием до 10-30 минут, поэтому
     # стартуем в 06:05 по Уфе (UTC+5), а бот сам ждёт ровно 06:30
     - cron: "5 1 * * *"
-  workflow_dispatch:        # ручной запуск для проверки (без ожидания)
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "manual (проверка, сразу) или cron (внешний будильник)"
+        default: manual
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: bot
@@ -23,7 +31,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Не отправлять дважды
+        id: dup
+        if: github.event_name == 'schedule' || inputs.source == 'cron'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          day=$(TZ=Asia/Yekaterinburg date +%Y-%m-%d)
+          n=$(gh api "repos/${{ github.repository }}/actions/workflows/morning.yml/runs?created=>=${day}T00:00:00%2B05:00&per_page=50" \
+            --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.display_title == "auto") | select(.conclusion == "success" or .status == "in_progress")] | length')
+          echo "already=$n" >> "$GITHUB_OUTPUT"
+          [ "$n" = "0" ] || echo "Сегодня уже отправлено, пропускаю"
       - name: Сводка
+        if: steps.dup.outputs.already == '0' || steps.dup.outputs.already == ''
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -33,12 +53,12 @@ jobs:
           MAIL_VIP: ${{ vars.MAIL_VIP }}
           MAIL_BLOCK: ${{ vars.MAIL_BLOCK }}
           MAIL_KEYWORDS: ${{ vars.MAIL_KEYWORDS }}
-          NO_WAIT: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+          NO_WAIT: ${{ (github.event_name == 'workflow_dispatch' && inputs.source != 'cron') && '1' || '0' }}
         run: python bot.py morning
       # GitHub отключает расписание, если в репозитории 60 дней нет активности.
       # Раз в месяц бот делает служебный коммит, чтобы этого не случилось.
       - name: Не дать GitHub уснуть
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || inputs.source == 'cron'
         run: |
           if [ "$(date -u +%d)" = "01" ]; then
             date -u > .keepalive
