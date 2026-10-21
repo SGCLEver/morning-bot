@@ -131,9 +131,9 @@ def tg(method, **params):
     return res["result"]
 
 
-def send(text, keyboard=None):
+def send(text, keyboard=None, silent=False):
     params = dict(chat_id=TG_CHAT, text=text, parse_mode="HTML",
-                  link_preview_options={"is_disabled": True})
+                  link_preview_options={"is_disabled": True}, disable_notification=silent)
     if keyboard:
         params["reply_markup"] = {"inline_keyboard": keyboard}
     return tg("sendMessage", **params)
@@ -210,8 +210,29 @@ def deadline_of(task):
     return None
 
 
+PAUSE_RE = re.compile(r"^\s*(пауза|pause)\b", re.I)
+
+
+def split_pause(tasks):
+    """Задача «Пауза» (дата = последний день паузы) не показывается в списках.
+    Возвращает (задачи без паузы, (начало, конец) паузы или None)."""
+    rest, span = [], None
+    for t in tasks:
+        if PAUSE_RE.match(t.get("content") or "") and due_date(t):
+            start = (t.get("added_at") or "")[:10]
+            start = date.fromisoformat(start) if start else due_date(t)
+            span = (min(start, due_date(t)), due_date(t))
+        else:
+            rest.append(t)
+    return rest, span
+
+
+def paused(span):
+    return bool(span) and span[0] <= today() <= span[1]
+
+
 def load_todoist():
-    tasks = td_all("/tasks")
+    tasks, _ = split_pause(td_all("/tasks"))
     projects = {p["id"]: p for p in td_all("/projects")}
     sections = {s["id"]: s for s in td_all("/sections")}
     return tasks, projects, sections
@@ -582,7 +603,11 @@ def morning():
     process_updates(wait=False)  # вдруг вчера кнопку нажали поздно
     wait_until(MORNING_AT)
     d0 = today()
-    tasks, projects, sections = load_todoist()
+    all_tasks, pause = split_pause(td_all("/tasks"))
+    if paused(pause):
+        log(f"пауза до {pause[1]}, молчу")
+        return
+    tasks = all_tasks
 
     head = [f"<b>☀️ {hello('Доброе утро')}!</b>",
             f"<i>{WD[d0.weekday()].capitalize()}, {d0.day} {MONTHS[d0.month - 1]}</i>"]
@@ -610,6 +635,12 @@ def morning():
     # хвосты: обычные просроченные + ДЕДЛ, у которых дедлайн уже прошёл
     overdue = sorted([t for t in tasks if due_date(t) and (
         (not is_dedl(t) and due_date(t) < d0) or (is_dedl(t) and deadline_of(t) < d0))], key=sort_key)
+    # дела, которые пришлись на паузу, не вываливаем списком, а сворачиваем в одну строку
+    in_pause = [t for t in overdue if pause and pause[0] <= due_date(t) <= pause[1]] if pause else []
+    overdue = [t for t in overdue if t not in in_pause]
+    if in_pause and not overdue:
+        blocks.append(f"⚠️ Хвосты: <i>{len(in_pause)} {plural(len(in_pause), 'дело', 'дела', 'дел')} "
+                      f"за время паузы, они в Todoist</i>")
     if overdue:
         lines = []
         for t in overdue[:7]:
@@ -620,6 +651,8 @@ def morning():
                 lines.append(task_line(t, show_date=True))
         if len(overdue) > 7:
             lines.append(f"<i>…и ещё {len(overdue) - 7}</i>")
+        if in_pause:
+            lines.append(f"<i>+{len(in_pause)} за время паузы, они в Todoist</i>")
         blocks.append(f"<b>⚠️ ХВОСТЫ · {len(overdue)}</b>\n" + quote(lines))
 
     dls = sorted([(deadline_of(t), t) for t in tasks
@@ -636,6 +669,10 @@ def morning():
     else:
         blocks.append("🎯 Дедлайнов в ближайшие две недели нет")
 
+    tb = trip_block(tasks, d0)
+    if tb:
+        blocks.append(tb)
+
     mb = mail_block(now() - timedelta(hours=24))
     if mb:
         blocks.append(mb)
@@ -648,6 +685,87 @@ def morning():
         if left in (0, 1):
             send(f"<b>⏰ ДЕДЛАЙН {when_left(left).upper()}</b>\n"
                  + quote([f"🔴 {esc(strip_dedl(t['content']))}\n      {left_plate(left)} · {fmt_day(dl)}"]))
+
+    # обратный отсчёт: отдельным тихим сообщением, без звука
+    cd = countdown_text(tasks, d0)
+    if cd:
+        send(cd, silent=True)
+
+
+# ---------- Обратный отсчёт и поездки ----------
+COUNTDOWN_RE = re.compile(r"всош|рсош|олимпиад|\bэтап|егэ|огэ|экзамен", re.I)
+
+
+def countdown_text(tasks, d0):
+    """Важные даты (ВсОШ, олимпиады, экзамены) кроме пробников и ДЕДЛ-заданий,
+    либо задачи с меткой «отсчет». Одна короткая строка на событие."""
+    items = []
+    for t in tasks:
+        c = t.get("content") or ""
+        labels = [x.lower().replace("ё", "е") for x in t.get("labels") or []]
+        if not due_date(t) or is_dedl(t) or "пробник" in c.lower():
+            continue
+        if not (COUNTDOWN_RE.search(c) or "отсчет" in labels):
+            continue
+        left = (due_date(t) - d0).days
+        if 0 < left <= 365:
+            items.append((left, clean(c)))
+    if not items:
+        return None
+    lines = [f"⏳ <code>{n}</code> {plural(n, 'день', 'дня', 'дней')} · {esc(name)}" for n, name in sorted(items)[:3]]
+    return "<i>" + "\n".join(lines) + "</i>"
+
+
+TRIP_RE = re.compile(r"^\s*(поездка|путешествие|выезд|еду|едем|лечу|летим)\b[\s:—–-]*(?:(?:в|во|на)\s+)?(?P<place>[^,(]+)", re.I)
+
+
+def geocode(place):
+    """Город по названию через Open-Meteo. Пробует и падежные варианты: «Казань», «Москву» → «Москва»."""
+    place = place.strip().strip(".")
+    tries = [place]
+    if place[-1:] in "уУ":
+        tries.append(place[:-1] + "а")
+    if place[-1:] in "юЮ":
+        tries.append(place[:-1] + "я")
+    if place[-1:] in "иеИЕ":
+        tries += [place[:-1] + "ь", place[:-1] + "а", place[:-1]]
+    for name in tries:
+        q = urllib.parse.urlencode({"name": name, "count": 1, "language": "ru", "format": "json"})
+        res = http("GET", "https://geocoding-api.open-meteo.com/v1/search?" + q) or {}
+        if res.get("results"):
+            r = res["results"][0]
+            return r["name"], r["latitude"], r["longitude"]
+    return None
+
+
+def trip_block(tasks, d0):
+    """За 0–3 дня до поездки (задача «Поездка в Казань» / «Поездка: Казань») погода там на 2 дня."""
+    out = []
+    for t in sorted(tasks, key=sort_key):
+        m = TRIP_RE.match(t.get("content") or "")
+        if not m or not due_date(t) or not 0 <= (due_date(t) - d0).days <= 3:
+            continue
+        try:
+            g = geocode(clean(m.group("place")))
+            if not g:
+                continue
+            name, lat, lon = g
+            start = due_date(t)
+            q = urllib.parse.urlencode({
+                "latitude": lat, "longitude": lon, "timezone": "auto",
+                "start_date": start.isoformat(), "end_date": (start + timedelta(days=1)).isoformat(),
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"})
+            w = http("GET", "https://api.open-meteo.com/v1/forecast?" + q)
+            lines = []
+            for i, ds in enumerate(w["daily"]["time"]):
+                dd = date.fromisoformat(ds)
+                lines.append(f"<code>{WD_SHORT[dd.weekday()]} {dd.day:02d}.{dd.month:02d}</code> {weather_line(w, i)}")
+            left = (start - d0).days
+            when = "сегодня" if left == 0 else "завтра" if left == 1 else f"через {left} {plural(left, 'день', 'дня', 'дней')}"
+            out.append(f"<b>🧳 ПОЕЗДКА · {esc(name)}</b> <i>{when}</i>\n" + quote(lines))
+        except Exception as e:
+            log("trip:", e)
+    return "\n\n".join(out) or None
 
 
 # ---------- Вечер ----------
@@ -673,7 +791,10 @@ def evening():
     wait_until(EVENING_AT)
     d0 = today()
     midnight = datetime(d0.year, d0.month, d0.day, tzinfo=TZ)
-    tasks, projects, sections = load_todoist()
+    tasks, pause = split_pause(td_all("/tasks"))
+    if paused(pause):
+        log(f"пауза до {pause[1]}, молчу")
+        return
     done = completed_between(midnight, now())
     # ДЕДЛ-задания не переносим: их дата = день публикации, от неё считается срок сдачи
     left = sorted([t for t in tasks if due_date(t) and due_date(t) <= d0 and not is_dedl(t)], key=sort_key)
@@ -961,7 +1082,9 @@ def remind():
     lo = slot + timedelta(minutes=REMIND_BEFORE - REMIND_EVERY / 2)
     hi = slot + timedelta(minutes=REMIND_BEFORE + REMIND_EVERY / 2)
     d0 = today()
-    tasks = td_all("/tasks")
+    tasks, pause = split_pause(td_all("/tasks"))
+    if paused(pause):
+        return
     for t in sorted(tasks, key=sort_key):
         if due_date(t) != d0 or not due_time(t) or not (REMIND_ALL or is_online(t)):
             continue
