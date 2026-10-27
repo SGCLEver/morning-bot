@@ -190,7 +190,7 @@ def is_dedl(task):
 
 def deadline_of(task):
     """Когда сдавать.
-    ДЕДЛ: дата задачи = публикация; пробник сдать в тот же день, остальное через 2 дня (с запасом в день от реального срока в 3 дня).
+    ДЕДЛ: дата задачи = публикация; пробник сдать в тот же день, остальное через 2 дня.
     Иначе: поле deadline Todoist или «Дедлайн: 24 октября 2026» в описании."""
     dl = (task.get("deadline") or {}).get("date")
     if dl:
@@ -208,6 +208,19 @@ def deadline_of(task):
         except ValueError:
             return None
     return None
+
+
+def dedl_visible_window(task):
+    """ДЕДЛ-задания показываем в день публикации и ещё два дня после."""
+    if not (is_dedl(task) and due_date(task)):
+        return None
+    return (due_date(task), due_date(task) + timedelta(days=2))
+
+
+def dedl_is_visible(task, d0):
+    """Показывать ДЕДЛ в блоках дедлайнов сегодня или в ближайшие два дня после публикации."""
+    win = dedl_visible_window(task)
+    return bool(win and win[0] <= d0 <= win[1])
 
 
 PAUSE_RE = re.compile(r"^\s*(пауза|pause)\b", re.I)
@@ -625,7 +638,7 @@ def morning():
             if is_dedl(t):
                 dl = deadline_of(t)
                 when = "сдать сегодня" if dl == d0 else f"сдать до {fmt_day(dl)}"
-                lines.append(f"<code>вышло</code> {esc(strip_dedl(t['content']))} · {when}")
+                lines.append(f"🎯 <b>ВЫШЛО</b> {esc(strip_dedl(t['content']))} · <code>{when}</code>")
             else:
                 lines.append(task_line(t))
         blocks.append(f"<b>📋 СЕГОДНЯ · {len(todays)}</b>\n" + quote(lines))
@@ -656,7 +669,8 @@ def morning():
         blocks.append(f"<b>⚠️ ХВОСТЫ · {len(overdue)}</b>\n" + quote(lines))
 
     dls = sorted([(deadline_of(t), t) for t in tasks
-                  if deadline_of(t) and 0 <= (deadline_of(t) - d0).days <= 14], key=lambda x: x[0])
+                  if deadline_of(t) and 0 <= (deadline_of(t) - d0).days <= 14
+                  and (not is_dedl(t) or dedl_is_visible(t, d0))], key=lambda x: x[0])
     if dls:
         lines = []
         for dl, t in dls[:6]:
@@ -788,6 +802,10 @@ def short(s, n=38):
 
 def evening():
     wait_until(EVENING_AT)
+    # Если внешний будильник запустил workflow ночью, не отправляем вечерний итог — ждём вечера.
+    if now().hour < 20:
+        log(f"слишком рано для вечернего итога ({now():%H:%M}), пропускаю")
+        return
     d0 = today()
     midnight = datetime(d0.year, d0.month, d0.day, tzinfo=TZ)
     tasks, pause = split_pause(td_all("/tasks"))
@@ -799,7 +817,8 @@ def evening():
     left = sorted([t for t in tasks if due_date(t) and due_date(t) <= d0 and not is_dedl(t)], key=sort_key)
     soon = sorted([(deadline_of(t), t) for t in tasks
                    if deadline_of(t) and 0 <= (deadline_of(t) - d0).days <= 1
-                   and due_date(t) and due_date(t) <= d0], key=lambda x: x[0])
+                   and due_date(t) and due_date(t) <= d0
+                   and (not is_dedl(t) or dedl_is_visible(t, d0))], key=lambda x: x[0])
 
     head = [f"<b>🌙 {hello('Добрый вечер')}!</b>",
             f"<i>Итоги дня · {WD[d0.weekday()]}, {d0.day} {MONTHS[d0.month - 1]}</i>"]
