@@ -1,0 +1,32 @@
+name: Проверка и уведомление об обновлении
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - bot.py
+      - test_bot.py
+      - .github/workflows/**
+
+permissions:
+  contents: read
+
+jobs:
+  check-and-notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Проверить код
+        run: |
+          python -m py_compile bot.py
+          python -m unittest -v test_bot
+      - name: Сообщить версию
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BOT_CHANGELOG: ${{ github.event.head_commit.message }}
+        run: python bot.py notify-update
