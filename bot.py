@@ -1084,9 +1084,17 @@ REMIND_BEFORE = int(os.environ.get("REMIND_BEFORE", "30"))  # минут
 REMIND_EVERY = int(os.environ.get("REMIND_EVERY", "10"))    # как часто будит cron-job.org
 REMIND_ALL = os.environ.get("REMIND_ALL") == "1"            # 1 = про все дела со временем
 
+STUDY_EVENT_RE = re.compile(
+    r"\b(?:зач[её]т(?:а|у|ом|е|ы|ов|ам|ами|ах)?|консультаци(?:я|и|ю|ей|й|ям|ями|ях))\b", re.I)
+
+
+def needs_reminder(task):
+    """Онлайн-занятия, зачёты и консультации; REMIND_ALL включает остальные дела."""
+    return REMIND_ALL or is_online(task) or bool(STUDY_EVENT_RE.search(clean(task.get("content"))))
+
 
 def remind():
-    """Запускается каждые REMIND_EVERY минут. Напоминает об онлайн-занятиях,
+    """Запускается каждые REMIND_EVERY минут. Напоминает об онлайн-занятиях, зачётах и консультациях,
     которые начнутся примерно через REMIND_BEFORE минут. Окно привязано к слоту
     расписания, поэтому одно занятие попадает ровно в один запуск."""
     n = now()
@@ -1098,7 +1106,7 @@ def remind():
     if paused(pause):
         return
     for t in sorted(tasks, key=sort_key):
-        if due_date(t) != d0 or not due_time(t) or not (REMIND_ALL or is_online(t)):
+        if due_date(t) != d0 or not due_time(t) or not needs_reminder(t):
             continue
         h, m = map(int, due_time(t).split(":"))
         start = datetime(d0.year, d0.month, d0.day, h, m, tzinfo=TZ)
@@ -1134,10 +1142,26 @@ def whoami():
         sys.exit("Боту никто не писал за последние сутки: напиши ему любое сообщение и запусти снова")
 
 
+def notify_update():
+    """Уведомление о прошедшем проверку обновлении GitHub; keepalive его не запускает."""
+    sha = os.environ.get("GITHUB_SHA", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ValueError("Для уведомления нужна версия коммита GITHUB_SHA")
+    missing = [k for k in ("TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID") if not os.environ.get(k)]
+    if missing:
+        raise ValueError("Не заданы секреты: " + ", ".join(missing))
+    change = os.environ.get("BOT_CHANGELOG", "Обновлены сводки и напоминания").strip()[:700]
+    send(f"<b>🔄 БОТ ОБНОВЛЁН · gh.{sha[:8]}</b>\n"
+         "Обновлена часть GitHub Actions: сводки и напоминания.\n\n"
+         + esc(change) + f'\n\n<a href="https://github.com/SGCLEver/morning-bot/commit/{sha}">Изменения</a>')
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "morning"
     if mode == "whoami":
         return whoami()
+    if mode == "notify-update":
+        return notify_update()
     missing = [k for k in ("TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID", "TODOIST_TOKEN") if not os.environ.get(k)]
     if missing:
         sys.exit("Не заданы секреты: " + ", ".join(missing))
@@ -1154,3 +1178,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
