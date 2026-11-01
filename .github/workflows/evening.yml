@@ -39,7 +39,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           day=$(TZ=Asia/Yekaterinburg date +%Y-%m-%d)
-          n=$(gh api "repos/${{ github.repository }}/actions/workflows/evening.yml/runs?created=>=${day}T00:00:00%2B05:00&per_page=50" \
+          # Ночные запуски бот пропускает: они не должны блокировать вечернюю отправку.
+          # Окно совпадает с проверкой now().hour < 20 в bot.py.
+          n=$(gh api "repos/${{ github.repository }}/actions/workflows/evening.yml/runs?created=>=${day}T20:00:00%2B05:00&per_page=50" \
             --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.display_title == "auto") | select(.conclusion == "success" or .status == "in_progress")] | length') || n=0
           echo "already=$n" >> "$GITHUB_OUTPUT"
           [ "$n" = "0" ] || echo "Сегодня уже отправлено, пропускаю"
