@@ -5,7 +5,6 @@
 Запуск:  python bot.py morning   |   python bot.py evening
 Только стандартная библиотека Python, никаких зависимостей.
 """
-import base64
 import email
 import email.policy
 import email.utils
@@ -138,10 +137,6 @@ def tg(method, **params):
     return res["result"]
 
 
-# Обложки для трёх типов сводок. Передаются Telegram как вложения.
-BANNERS = {'dawn': 'iVBORw0KGgoAAAANSUhEUgAAAoAAAACYCAIAAAD7tc+rAAADpElEQVR42u3YsU0EQQxA0emQAmjiSkCUQUp8KRlUQEpCdjEZQqSQISQChNizvfaTXgNr7+wf7Xo/PQAAwZYRAIAAA4AAAwACDAACDAAIMAAIMAAgwAAgwACAAAOAAAOAAAMAAgwAAgwACDDAVB9vT39laAIMQFx3lViAAUhOrwwLMABp6ZVhAQYgLb0yLMAAZNZXgwUYgIT0yrAAA5BZXw0WYAD11WABBmBSfTVYgAHUV4MFGIBJ9dVgAQZQXw0WYAAEGAEGUF8NFmAAGtZXgwUYQIAFWIABGFNfDRZgAAEWYAEGYEx9NViAAQRYgAUYgDH11WABBhBgAd51gJ/vAIi37wDb4L8JMID6arAAAwiwAAswAAIswAIMIMACLMAACDACDCDAAizAAAgwAgwgwAIswAAIMAIMIMACLMAAAizAAgyAAAuwAAMIsAALMAACbI8CDCDAAizAAAgwAgwgwAIswAD0aLD1CTCAAAuwAAMgwAgwgAarrwADIMAIMIAGq68AAwiwAAswABqsvgIMIMACLMAAjG2wNQkwgAarrwADIMAIMIAGq68AA7D7BluKAANosPoKMADdG2wRAgygweorwAB0b7DhCzCADEuvAAPQusFGHRrg18cjAPWdNb3GG0+AAUZn2EgFGIDQDBujAAMQV2JDE2AAEGAAQIABQIABAAEGAAEGAAQYAAQYYIarm+t4xi7AACpbi2UJMIDWSjICDDCgtZIswACKq8cIMCC36LEAAyiuGAuwKQCKixgLMIDiirEAAyguYizAgOiixAIMoLiIsQADiosYCzCA4qLEAgzILUoswIDcghgLMCC3KLEAA1oLM2IswIDWosQZAfYXHiQWxDg5wEqMfuzuOPgio8StAizGyAYgxskBVmL0FRDjzAArMSoLKHFmgMVYawHEODnAYqy1AHqcHGAl1loAMc4M8Hcv97cU4aQB1GnW6vpgOEgAlbO1hlw0tBaAUuVaE24ZcgtAtYSt9lcMrQWgYMtWs/vFxeGSnxwDgGoqBlgvxRtAgAUVwQYoFmCxQacBNg6wQiDSAGcMsK88Cg0gwCDPgACDPAMIMGgzIMCgzQACDNoMCDAgzIAAgzYDAgwIMyDAoM2AAAPCDAIMCDMgwIAwgwAD2gwIMCDMIMCANgMCDGgzCDCANoMAA9oMAgwgzwgwgDyDAAMoND18vYoCDCDSbN/XXwkwgE6zWVYFGECtiW6qAAOIt4hWJ8AAIMAAMMMn0uim0jbSxUIAAAAASUVORK5CYII=', 'dusk': 'iVBORw0KGgoAAAANSUhEUgAAAoAAAACYCAIAAAD7tc+rAAADp0lEQVR42u3YQUoEMRBA0dxnliq4EbcqIugB5gR6ybmJp3DrQhDBhQhJVU3qwbtAVzr9kx6Hwx0AEGwYAQAIMAAIMAAgwAAgwACAAAOAAAMAAgwAAgwACDAACDAACDAAIMAAIMAAgAADdPXxfjIEAQYgrrtfjEKAAQhNr/oKMADR6VVfAQYgOr3qK8AAJNRXgAUYgOj0qq8AA6C+CDBAg/oKsAADoL4IMECD+gqwAAOQUF8BFmAA1BcBBhBgBBiAFfUVYAEGQH0RYAABRoABWFFfARZgAAQYAQboUV8BFmAABBgBBuhRXwEWYABcf5kU4MuLFwDi/esGbFz7EWCA6vUVYAEGQIARYAABRoABEGAEGECAEWAABBgBBji7AGuwAAMgwAgwgAAjwACsC7AGCzAAAowAAwgwAgzAugBrsAADIMAIMECbAGuwAAOQE2ANFmAABBgBBtBgBBiApQHWYAEGICfAGizAAGgwAgzQKcAaLMAAaDACDNApwBoswACkNViGBRiAnABrsAADkNZgGRZgANIaPKXEci7AAAIcV2L3aQEG0OC1VfY3W4ABNPhUjUURYAANVl8BBmD3BlsIAQbQYPUVYAB2b7DhCzCADEuvAAOwdYONOjTAtzdHAOpbml7jjSfAAK0zbKQCDEBoho1RgAGIK7GhCTAACDAAIMAAIMAAgAADgAADAAIMAAIM0MPj/Ws8YxdgAJWtxWIJMIDWSjICDNCgtZIswACKq8cIMCC36LEAAyiuGAuwKQCKixgLMIDiirEAAyguYizAgOiixAIMoLiIsQADiosYCzCA4qLEAgzILUoswIDcghgLMCC3KLEAA1oLPWIswIDWosQZAfYXHiQWxDg5wEqMfpzddvBFRom3CrAYIxuAGCcHWInRV0CMMwOsxKgsoMSZARZjrQUQ4+QAi7HWAuhxcoCVWGsBxDgzwD89PbxRhJ0GUKdZY9cHw0YCqJyt0eSgobUAlCrX6HDKkFsAqiVsbH/E0FoACrZsbHa+uLp+5jfbAKCaigHWS/EGEGBBRbABigVYbNBpgMkBVghEGmBhgH3lUWgAAQZ5BgQY5BlAgEGbAQEGbQYQYNBmQIABYQYEGLQZEGBAmAEBBm0GBBgQZhBgQJgBAQaEGQQY0GZAgAFhBgEGtBkQYECbQYABtBkEGNBmEGAAeUaAAeQZBBhAodnD96sowAAizfy+/kmAAXSaaVkVYAC1JrqpAgwg3iJanQADgAADQA+fZmITBCHdmmcAAAAASUVORK5CYII=', 'week': 'iVBORw0KGgoAAAANSUhEUgAAAoAAAACYCAIAAAD7tc+rAAADo0lEQVR42u3YsU0EQQxA0amVGiiB6CqBmPAICdCJGFIiCriIkAwhESDEnu21n/QaWHtn/2jXy/sTABBsGQEACDAACDAAIMAAIMAAgAADgAADAAIMAAIMAAgwAAgwAAgwACDAACDAAIAAA0z1cX7+K0MTYADiuqvEAgxAcnplWIABSEuvDAswAGnplWEBBiCzvhoswAAkpFeGBRiAzPpqsAADqK8GCzAAk+qrwQIMoL4aLMAATKqvBgswgPpqsAADIMAIMID6arAAA9CwvhoswAACLMACDMCY+mqwAAMIsAALMABj6qvBAgwgwAIswACMqa8GCzCAAAvwngN8ensEIN6uA2x9/yfAAOqrwQIMIMACLMAACLAACzCAAAuwAAMgwAgwgAALsAADIMAIMIAAC7AAAyDACDCAAAuwAAMIsAALMAACLMACDCDAAizAAAiwPQowgAALsAADIMAIMIAAC7AAA9CjwdYnwAACLMACDIAAI8AAGqy+AgyAACPAABqsvgIMIMACLMAAaLD6CjCAAAuwAAMwtsHWJMAAGqy+AgyAACPAABqsvgIMwO4bbCkCDKDB6ivAAHRvsEUIMIAGq68AA9C9wYYvwAAyLL0CDEDrBht1aICPrw8A1HfR9BpvPAEGGJ1hIxVgAEIzbIwCDEBciQ1NgAFAgAEAAQYAAQYABBgABBgAEGAAEGCAGW5uD/GMXYABVLYWyxJgAK2VZAQYYEBrJVmAARRXjxFgQG7RYwEGUFwxFmBTABQXMRZgAMUVYwEGUFzEWIAB0UWJBRhAcRFjAQYUFzEWYADFRYkFGJBblFiAAbkFMRZgQG5RYgEGtBZmxFiAAa1FiTMC7C88SCyIcXKAlRj92N1x8EVGiVsFWIyRDUCMkwOsxOgrIMaZAVZiVBZQ4swAi7HWAohxcoDFWGsB9Dg5wEqstQBinBng7+5O9xThpAHUadbq+mA4SACVs7WGXDS0FoBS5VoTbhlyC0C1hK32VwytBaBgy1az+8XV4ZqfHAOAaioGWC/FG0CABRXBBigWYLFBpwE2DrBCINIAFwywrzwKDSDAIM+AAIM8AwgwaDMgwKDNAAIM2gwIMCDMgACDNgMCDAgzIMCgzYAAA8IMAgwIMyDAgDCDAAPaDAgwIMwgwIA2AwIMaDMIMIA2gwAD2gwCDCDPCDCAPIMAAyg0PXy9igIMINJs39dfCTCATrNZVgUYQK2JbqoAA4i3iFYnwAAgwAAwwyft4SzdF+pASgAAAABJRU5ErkJggg=='}
-
-
 def rich_html(text):
     """Переносит существующие заголовки и строки в нативные блоки Telegram."""
     def render_quote(match):
@@ -170,49 +165,21 @@ def rich_html(text):
                 result.append(f"<details><summary>{title[4:-5]}</summary>{content}</details>")
             else:
                 result.append(title + content)
-    return "".join(result)
+    return "<hr>".join(result)
 
 
-def send_cover(params, banner):
-    boundary = uuid.uuid4().hex
-    body = bytearray()
-    for key, value in params.items():
-        body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n'.encode())
-        body.extend((value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)).encode())
-        body.extend(b"\r\n")
-    body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="cover.png"\r\n'
-                'Content-Type: image/png\r\n\r\n'.encode())
-    body.extend(base64.b64decode(BANNERS[banner]))
-    body.extend(f"\r\n--{boundary}--\r\n".encode())
-    result = http("POST", f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
-                  {"Content-Type": f"multipart/form-data; boundary={boundary}"}, bytes(body))
-    return result["result"]
-
-
-def send(text, keyboard=None, silent=False, banner=None, chat_id=None):
+def send(text, keyboard=None, silent=False, chat_id=None):
     params = dict(chat_id=TG_CHAT if chat_id is None else chat_id, disable_notification=silent)
     if keyboard:
         params["reply_markup"] = {"inline_keyboard": keyboard}
-    if banner:
-        # Фото видит и клиент без поддержки rich-сообщений. Для длинной сводки
-        # отдельное сообщение сохраняет весь текст и ID для обработки кнопок.
-        try:
-            if len(text.encode("utf-16-le")) <= 2048:
-                return send_cover({**params, "caption": text, "parse_mode": "HTML"}, banner)
-            send_cover(dict(chat_id=params["chat_id"], disable_notification=True), banner)
-        except APIError as e:
-            log(f"Telegram: не отправилась обложка (HTTP {e.status})")
-        except (urllib.error.URLError, TimeoutError):
-            log("Telegram: не удалось загрузить обложку")
-    else:
-        try:
-            return tg("sendRichMessage", **params, rich_message={"html": rich_html(text)})
-        except APIError as e:
-            if e.status not in (400, 404):
-                raise
-            log(f"Telegram: rich-формат отклонён (HTTP {e.status})")
-    return tg("sendMessage", **params, text=text, parse_mode="HTML",
-              link_preview_options={"is_disabled": True})
+    try:
+        return tg("sendRichMessage", **params, rich_message={"html": rich_html(text)})
+    except APIError as e:
+        if e.status not in (400, 404):
+            raise
+        log(f"Telegram: rich-формат отклонён (HTTP {e.status})")
+        return tg("sendMessage", **params, text=text, parse_mode="HTML",
+                  link_preview_options={"is_disabled": True})
 
 
 # ---------- Todoist ----------
@@ -768,7 +735,7 @@ def morning():
     mb = mail_block(now() - timedelta(hours=24))
     blocks.append(mb)
 
-    send("\n\n".join(blocks), banner="dawn")
+    send("\n\n".join(blocks))
 
     # Отдельное напоминание только накануне и в день дедлайна
     for dl, t in dls:
@@ -941,9 +908,9 @@ def evening():
 
     if not left:
         blocks.append("🎉 Все дела на сегодня закрыты")
-        send("\n\n".join(blocks), banner="dusk")
+        send("\n\n".join(blocks))
         if d0.weekday() == 6:
-            send(week_plan(tasks, d0 + timedelta(days=1)), banner="week")
+            send(week_plan(tasks, d0 + timedelta(days=1)))
         return
 
     # сами дела показаны кнопками ниже, отдельным списком не дублируем
@@ -953,9 +920,9 @@ def evening():
     kb = [[{"text": "✅ " + short(t["content"]), "callback_data": "t:" + t["id"]}] for t in shown]
     kb.append([{"text": "➡️ Перенести на завтра", "callback_data": "go:" + d0.isoformat()}])
     kb.append([{"text": "Ничего не переносить", "callback_data": "no"}])
-    msg = send("\n\n".join(blocks), kb, banner="dusk")
+    msg = send("\n\n".join(blocks), kb)
     if d0.weekday() == 6:
-        send(week_plan(tasks, d0 + timedelta(days=1)), banner="week")
+        send(week_plan(tasks, d0 + timedelta(days=1)))
 
     # нажатия кнопок обрабатывает Cloudflare Worker (папка worker/), ждать здесь не нужно
 
