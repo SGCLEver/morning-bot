@@ -173,23 +173,18 @@ def rich_html(text):
     return "".join(result)
 
 
-def send_rich(params, banner):
-    if not banner:
-        return tg("sendRichMessage", **params)
+def send_cover(params, banner):
     boundary = uuid.uuid4().hex
-    rich = params["rich_message"]
-    rich["html"] = '<img src="tg://photo?id=cover">' + rich["html"]
-    rich["media"] = [{"id": "cover", "media": {"type": "photo", "media": "attach://cover"}}]
     body = bytearray()
     for key, value in params.items():
         body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n'.encode())
         body.extend((value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)).encode())
         body.extend(b"\r\n")
-    body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="cover"; filename="cover.png"\r\n'
+    body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="cover.png"\r\n'
                 'Content-Type: image/png\r\n\r\n'.encode())
     body.extend(base64.b64decode(BANNERS[banner]))
     body.extend(f"\r\n--{boundary}--\r\n".encode())
-    result = http("POST", f"https://api.telegram.org/bot{TG_TOKEN}/sendRichMessage",
+    result = http("POST", f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
                   {"Content-Type": f"multipart/form-data; boundary={boundary}"}, bytes(body))
     return result["result"]
 
@@ -198,21 +193,26 @@ def send(text, keyboard=None, silent=False, banner=None, chat_id=None):
     params = dict(chat_id=TG_CHAT if chat_id is None else chat_id, disable_notification=silent)
     if keyboard:
         params["reply_markup"] = {"inline_keyboard": keyboard}
-    rich = rich_html(text)
-    try:
-        return send_rich({**params, "rich_message": {"html": rich}}, banner)
-    except APIError as e:
-        if e.status not in (400, 404):
-            raise
-        if banner:
-            try:
-                return send_rich({**params, "rich_message": {"html": rich}}, None)
-            except APIError as retry_error:
-                if retry_error.status not in (400, 404):
-                    raise
-        log("Telegram: rich-формат отклонён, отправляю обычное сообщение")
-        return tg("sendMessage", **params, text=text, parse_mode="HTML",
-                  link_preview_options={"is_disabled": True})
+    if banner:
+        # Фото видит и клиент без поддержки rich-сообщений. Для длинной сводки
+        # отдельное сообщение сохраняет весь текст и ID для обработки кнопок.
+        try:
+            if len(text.encode("utf-16-le")) <= 2048:
+                return send_cover({**params, "caption": text, "parse_mode": "HTML"}, banner)
+            send_cover(dict(chat_id=params["chat_id"], disable_notification=True), banner)
+        except APIError as e:
+            log(f"Telegram: не отправилась обложка (HTTP {e.status})")
+        except (urllib.error.URLError, TimeoutError):
+            log("Telegram: не удалось загрузить обложку")
+    else:
+        try:
+            return tg("sendRichMessage", **params, rich_message={"html": rich_html(text)})
+        except APIError as e:
+            if e.status not in (400, 404):
+                raise
+            log(f"Telegram: rich-формат отклонён (HTTP {e.status})")
+    return tg("sendMessage", **params, text=text, parse_mode="HTML",
+              link_preview_options={"is_disabled": True})
 
 
 # ---------- Todoist ----------
