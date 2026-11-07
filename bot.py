@@ -150,22 +150,26 @@ def rich_html(text):
 
     result = []
     for section in text.split("\n\n"):
-        title, sep, body = section.partition("\n")
-        if re.fullmatch(r"<b>.*</b>", title):
-            title = "<h" + ("2" if not result else "3") + ">" + title[3:-4] + ("</h2>" if not result else "</h3>")
+        first, _, body = section.partition("\n")
+        heading = re.fullmatch(r"<b>(.*?)</b>(?: +(<i>.*?</i>))?", first)
+        title = ""
+        if heading:
+            level = "h1" if not result else "h2"
+            title = f"<{level}>{heading[1]}</{level}>"
+            if heading[2]:
+                body = heading[2] + ("\n" + body if body else "")
         else:
             body = section
-            title = ""
         body = re.sub(r"<blockquote>(.*?)</blockquote>", render_quote, body, flags=re.S)
         parts = re.split(r"(<ul>.*?</ul>)", body, flags=re.S)
         content = "".join(part if part.startswith("<ul>") else f"<p>{part.strip().replace(chr(10), '<br>')}</p>"
                           for part in parts if part.strip())
         if title or content:
-            if title.startswith("<h3>") and ("Просрочено" in title or "Поездка" in title):
+            if title.startswith("<h2>") and ("Просрочено" in title or "Поездка" in title):
                 result.append(f"<details><summary>{title[4:-5]}</summary>{content}</details>")
             else:
                 result.append(title + content)
-    return "<hr>".join(result)
+    return "<hr/>".join(result)
 
 
 def send(text, keyboard=None, silent=False, chat_id=None):
@@ -1201,9 +1205,18 @@ def notify_update():
     if missing:
         raise ValueError("Не заданы секреты: " + ", ".join(missing))
     change = os.environ.get("BOT_CHANGELOG", "Обновлены сводки и напоминания").strip()[:700]
-    send(f"<b>🔄 БОТ ОБНОВЛЁН · gh.{sha[:8]}</b>\n"
-         "Обновлена часть GitHub Actions: сводки и напоминания.\n\n"
-         + esc(change) + f'\n\n<a href="https://github.com/SGCLEver/morning-bot/commit/{sha}">Изменения</a>')
+    message = send(
+        f"<b>🔄 Бот обновился · gh.{sha[:8]}</b>\n\n"
+        "<b>Что изменилось</b>\n"
+        + quote([esc(change).replace("\n", " "), "Проверка почты видна в обеих сводках."])
+        + f'\n\n<a href="https://github.com/SGCLEver/morning-bot/commit/{sha}">Изменения на GitHub</a>'
+    )
+    blocks = (message.get("rich_message") or {}).get("blocks", [])
+    types = [block["type"] for block in blocks]
+    if {"heading", "divider", "list"}.issubset(types):
+        log("Telegram подтвердил Rich HTML. Блоки:", ", ".join(types))
+    else:
+        log("Telegram не подтвердил заголовок, разделитель и список в уведомлении")
 
 
 def main():
