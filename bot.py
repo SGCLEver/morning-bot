@@ -93,12 +93,6 @@ def log(*a):
 
 
 # ---------- HTTP ----------
-class APIError(RuntimeError):
-    def __init__(self, status, message):
-        super().__init__(message)
-        self.status = status
-
-
 def http(method, url, headers=None, data=None, timeout=70):
     body = None
     headers = dict(headers or {})
@@ -120,7 +114,7 @@ def http(method, url, headers=None, data=None, timeout=70):
             if e.code in (429, 500, 502, 503, 504) and attempt < 2:
                 time.sleep(3 * (attempt + 1))
                 continue
-            raise APIError(e.code, f"{method} {urllib.parse.urlsplit(url).hostname} -> {e.code}: {e.read()[:300]!r}")
+            raise RuntimeError(f"{method} {url.split('?')[0]} -> {e.code}: {e.read()[:300]!r}")
         except (urllib.error.URLError, TimeoutError):
             if attempt < 2:
                 time.sleep(3 * (attempt + 1))
@@ -137,53 +131,12 @@ def tg(method, **params):
     return res["result"]
 
 
-def rich_html(text):
-    """Переносит существующие заголовки и строки в нативные блоки Telegram."""
-    def render_quote(match):
-        items = []
-        for line in match[1].splitlines():
-            if line.startswith(" ") and items:
-                items[-1] += "<br>" + line.strip()
-            elif line.strip():
-                items.append(line.strip())
-        return "<ul>" + "".join(f"<li>{item}</li>" for item in items) + "</ul>" if items else ""
-
-    result = []
-    for section in text.split("\n\n"):
-        first, _, body = section.partition("\n")
-        heading = re.fullmatch(r"<b>(.*?)</b>(?: +(<i>.*?</i>))?", first)
-        title = ""
-        if heading:
-            level = "h1" if not result else "h2"
-            title = f"<{level}>{heading[1]}</{level}>"
-            if heading[2]:
-                body = heading[2] + ("\n" + body if body else "")
-        else:
-            body = section
-        body = re.sub(r"<blockquote>(.*?)</blockquote>", render_quote, body, flags=re.S)
-        parts = re.split(r"(<ul>.*?</ul>)", body, flags=re.S)
-        content = "".join(part if part.startswith("<ul>") else f"<p>{part.strip().replace(chr(10), '<br>')}</p>"
-                          for part in parts if part.strip())
-        if title or content:
-            if title.startswith("<h2>") and ("Просрочено" in title or "Поездка" in title):
-                result.append(f"<details><summary>{title[4:-5]}</summary>{content}</details>")
-            else:
-                result.append(title + content)
-    return "<hr/>".join(result)
-
-
-def send(text, keyboard=None, silent=False, chat_id=None):
-    params = dict(chat_id=TG_CHAT if chat_id is None else chat_id, disable_notification=silent)
+def send(text, keyboard=None, silent=False):
+    params = dict(chat_id=TG_CHAT, text=text, parse_mode="HTML",
+                  link_preview_options={"is_disabled": True}, disable_notification=silent)
     if keyboard:
         params["reply_markup"] = {"inline_keyboard": keyboard}
-    try:
-        return tg("sendRichMessage", **params, rich_message={"html": rich_html(text)})
-    except APIError as e:
-        if e.status not in (400, 404):
-            raise
-        log(f"Telegram: rich-формат отклонён (HTTP {e.status})")
-        return tg("sendMessage", **params, text=text, parse_mode="HTML",
-                  link_preview_options={"is_disabled": True})
+    return tg("sendMessage", **params)
 
 
 # ---------- Todoist ----------
@@ -589,18 +542,18 @@ def mail_block(since, limit=6):
         mails = important_mail(since)
     except Exception as e:
         log("mail:", e)
-        return "<b>✉️ Почта</b>\nПроверка писем не удалась."
+        return "✉️ Почта: проверить не удалось"
     if mails is None:
-        return "<b>✉️ Почта</b>\nПочта ещё не подключена."
+        return None
     if not mails:
-        return "<b>✉️ Почта</b>\nНовых важных писем нет."
+        return "✉️ Почта: важного нет"
     lines = []
     for x in mails[:limit]:
         plate = "".join(f"<code>{t}</code> " for t in x["tags"])
-        lines.append(f"{plate}<b>{esc(x['subject'])}</b>\n      {esc(x['from'])}")
+        lines.append(f"{plate}<b>{esc(x['from'])}</b>\n      {esc(x['subject'])}")
     if len(mails) > limit:
         lines.append(f"<i>…и ещё {len(mails) - limit}</i>")
-    return f"<b>✉️ Почта · {len(mails)}</b>\n" + quote(lines)
+    return f"<b>✉️ ПОЧТА · {len(mails)}</b>\n" + quote(lines)
 
 
 # ---------- Утро ----------
@@ -675,9 +628,7 @@ def morning():
         head.append(weather_line(weather(), 0))
     except Exception as e:
         log("weather:", e)
-    blocks = ["\n".join(head[:2])]
-    if len(head) > 2:
-        blocks.append("<b>☁ Погода</b>\n" + head[2])
+    blocks = ["\n".join(head)]
 
     # обычные дела на сегодня + ДЕДЛ-задания, которые сегодня публикуют
     todays = sorted([t for t in tasks if due_date(t) == d0], key=sort_key)
@@ -690,7 +641,7 @@ def morning():
                 lines.append(f"🎯 <b>ВЫШЛО</b> {esc(strip_dedl(t['content']))} · <code>{when}</code>")
             else:
                 lines.append(task_line(t))
-        blocks.append(f"<b>📋 На сегодня · {len(todays)}</b>\n" + quote(lines))
+        blocks.append(f"<b>📋 СЕГОДНЯ · {len(todays)}</b>\n" + quote(lines))
     else:
         blocks.append("📋 Сегодня: дел нет")
 
@@ -715,7 +666,7 @@ def morning():
             lines.append(f"<i>…и ещё {len(overdue) - 7}</i>")
         if in_pause:
             lines.append(f"<i>+{len(in_pause)} за время паузы, они в Todoist</i>")
-        blocks.append(f"<b>⚠️ Просрочено · {len(overdue)}</b>\n" + quote(lines))
+        blocks.append(f"<b>⚠️ ХВОСТЫ · {len(overdue)}</b>\n" + quote(lines))
 
     dls = sorted([(deadline_of(t), t) for t in tasks
                   if deadline_of(t) and 0 <= (deadline_of(t) - d0).days <= 14
@@ -728,7 +679,7 @@ def morning():
             if is_dedl(t) and due_date(t) > d0:
                 line += " · в день выхода" if due_date(t) == dl else f" · выйдет {fmt_day(due_date(t))}"
             lines.append(line)
-        blocks.append("<b>🎯 Ближайшие сроки</b>\n" + quote(lines))
+        blocks.append("<b>🎯 ДЕДЛАЙНЫ</b>\n" + quote(lines))
     else:
         blocks.append("🎯 Дедлайнов в ближайшие две недели нет")
 
@@ -737,7 +688,8 @@ def morning():
         blocks.append(tb)
 
     mb = mail_block(now() - timedelta(hours=24))
-    blocks.append(mb)
+    if mb:
+        blocks.append(mb)
 
     send("\n\n".join(blocks))
 
@@ -824,7 +776,7 @@ def trip_block(tasks, d0):
                 lines.append(f"<code>{WD_SHORT[dd.weekday()]} {dd.day:02d}.{dd.month:02d}</code> {weather_line(w, i)}")
             left = (start - d0).days
             when = "сегодня" if left == 0 else "завтра" if left == 1 else f"через {left} {plural(left, 'день', 'дня', 'дней')}"
-            out.append(f"<b>🧳 Поездка · {esc(name)}</b>\n<i>{when}</i>\n" + quote(lines))
+            out.append(f"<b>🧳 ПОЕЗДКА · {esc(name)}</b> <i>{when}</i>\n" + quote(lines))
         except Exception as e:
             log("trip:", e)
     return "\n\n".join(out) or None
@@ -874,33 +826,25 @@ def evening():
         head.append("Завтра: " + weather_line(weather(), 1))
     except Exception as e:
         log("weather:", e)
-    blocks = ["\n".join(head[:2])]
-    if len(head) > 2:
-        blocks.append("<b>☁ Погода</b>\n" + head[2])
-
-    total = len(done) + len(left)
-    if total:
-        filled = round(8 * len(done) / total)
-        bar = "■" * filled + "□" * (8 - filled)
-        blocks.append(f"<b>{len(done)} из {total} дел готово</b>\n<code>{bar}</code>")
+    blocks = ["\n".join(head)]
 
     if done:
         lines = [task_line({"content": t.get("content", "")}) for t in done[:10]]
         if len(done) > 10:
             lines.append(f"<i>…и ещё {len(done) - 10}</i>")
-        blocks.append(f"<b>✅ Сделано · {len(done)}</b>\n" + quote(lines))
+        blocks.append(f"<b>✅ СДЕЛАНО · {len(done)}</b>\n" + quote(lines))
     else:
         blocks.append("✅ Сделано: пока ничего не отмечено")
 
     tomorrow = d0 + timedelta(days=1)
     timed = sorted([t for t in tasks if due_date(t) == tomorrow and due_time(t)], key=sort_key)
     if timed:
-        blocks.append("<b>📅 Завтра по времени</b>\n" + quote([task_line(t) for t in timed]))
+        blocks.append("<b>📅 ЗАВТРА ПО ВРЕМЕНИ</b>\n" + quote([task_line(t) for t in timed]))
 
     if soon:
         lines = [f"🔴 {esc(strip_dedl(t['content']))}\n      {left_plate((dl - d0).days)} · {fmt_day(dl)}"
                  for dl, t in soon]
-        blocks.append("<b>🎯 Скоро сдавать</b>\n" + quote(lines))
+        blocks.append("<b>🎯 СКОРО СДАВАТЬ</b>\n" + quote(lines))
 
     if d0.weekday() == 6:
         blocks.append(weekly_stats(d0))
@@ -908,7 +852,8 @@ def evening():
     # почта, пришедшая после утренней сводки
     h, mnt = map(int, MORNING_AT.split(":"))
     mb = mail_block(datetime(d0.year, d0.month, d0.day, h, mnt, tzinfo=TZ))
-    blocks.append(mb)
+    if mb:
+        blocks.append(mb)
 
     if not left:
         blocks.append("🎉 Все дела на сегодня закрыты")
@@ -918,7 +863,7 @@ def evening():
         return
 
     # сами дела показаны кнопками ниже, отдельным списком не дублируем
-    blocks.append(f"<b>⏳ Осталось · {len(left)}</b>\n"
+    blocks.append(f"<b>⏳ ОСТАЛОСЬ · {len(left)}</b>\n"
                   "<i>Отмеченное ✅ перенесу на завтра. Нажми на дело, чтобы оставить его на месте ✖️</i>")
     shown = left[:40]
     kb = [[{"text": "✅ " + short(t["content"]), "callback_data": "t:" + t["id"]}] for t in shown]
@@ -968,7 +913,7 @@ def week_plan(tasks, monday):
     if free:
         summary.append(f"свободно: {', '.join(free)}")
     sunday = days[-1]
-    head = (f"<b>🗓 Следующая неделя</b>\n<i>{monday.day} {MONTHS[monday.month - 1]} – "
+    head = (f"<b>🗓 ПЛАН НЕДЕЛИ</b>\n<i>{monday.day} {MONTHS[monday.month - 1]} – "
             f"{sunday.day} {MONTHS[sunday.month - 1]}</i>")
     text = head + "\n" + quote(lines)
     if summary:
@@ -990,7 +935,7 @@ def weekly_stats(d0):
     top = max(per) or 1
     rows = [f"<code>{WD_SHORT[i]} {('█' * round(n / top * 8)) if n else '·':<8} {n}</code>"
             for i, n in enumerate(per)]
-    return f"<b>📊 Неделя в делах · {total} {plural(total, 'дело', 'дела', 'дел')}</b>\n" + quote(rows)
+    return f"<b>📊 НЕДЕЛЯ · {total} {plural(total, 'дело', 'дела', 'дел')}</b>\n" + quote(rows)
 
 
 # ---------- Обработка кнопок ----------
@@ -1175,7 +1120,7 @@ def remind():
 def mail_now():
     """Проверка почты по кнопке «✉️ Проверить почту»: важные письма за последние сутки."""
     mb = mail_block(now() - timedelta(hours=24), limit=10)
-    send(mb)
+    send(mb or "✉️ Почта не подключена")
 
 
 def whoami():
@@ -1187,8 +1132,9 @@ def whoami():
         if chat.get("type") == "private":
             chats[chat["id"]] = chat
     for cid in chats:
-        send(f"<b>Твой Telegram ID</b>\n<code>{cid}</code>\nНажми на число, чтобы скопировать.",
-             chat_id=cid)
+        tg("sendMessage", chat_id=cid, parse_mode="HTML",
+           text=f"Твой ID: <code>{cid}</code>\n\nНажми на число, чтобы скопировать, и вставь его "
+                f"в секрет TELEGRAM_CHAT_ID на GitHub.")
     if ups:
         tg("getUpdates", offset=ups[-1]["update_id"] + 1, timeout=0)
     log(f"ответил в {len(chats)} чат(ов)")
@@ -1205,18 +1151,9 @@ def notify_update():
     if missing:
         raise ValueError("Не заданы секреты: " + ", ".join(missing))
     change = os.environ.get("BOT_CHANGELOG", "Обновлены сводки и напоминания").strip()[:700]
-    message = send(
-        f"<b>🔄 Бот обновился · gh.{sha[:8]}</b>\n\n"
-        "<b>Что изменилось</b>\n"
-        + quote([esc(change).replace("\n", " "), "Проверка почты видна в обеих сводках."])
-        + f'\n\n<a href="https://github.com/SGCLEver/morning-bot/commit/{sha}">Изменения на GitHub</a>'
-    )
-    blocks = (message.get("rich_message") or {}).get("blocks", [])
-    types = [block["type"] for block in blocks]
-    if {"heading", "divider", "list"}.issubset(types):
-        log("Telegram подтвердил Rich HTML. Блоки:", ", ".join(types))
-    else:
-        log("Telegram не подтвердил заголовок, разделитель и список в уведомлении")
+    send(f"<b>🔄 БОТ ОБНОВЛЁН · gh.{sha[:8]}</b>\n"
+         "Обновлена часть GitHub Actions: сводки и напоминания.\n\n"
+         + esc(change) + f'\n\n<a href="https://github.com/SGCLEver/morning-bot/commit/{sha}">Изменения</a>')
 
 
 def main():
