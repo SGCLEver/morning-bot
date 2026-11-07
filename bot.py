@@ -5,6 +5,7 @@
 Запуск:  python bot.py morning   |   python bot.py evening
 Только стандартная библиотека Python, никаких зависимостей.
 """
+import base64
 import email
 import email.policy
 import email.utils
@@ -93,6 +94,12 @@ def log(*a):
 
 
 # ---------- HTTP ----------
+class APIError(RuntimeError):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+
+
 def http(method, url, headers=None, data=None, timeout=70):
     body = None
     headers = dict(headers or {})
@@ -114,7 +121,7 @@ def http(method, url, headers=None, data=None, timeout=70):
             if e.code in (429, 500, 502, 503, 504) and attempt < 2:
                 time.sleep(3 * (attempt + 1))
                 continue
-            raise RuntimeError(f"{method} {url.split('?')[0]} -> {e.code}: {e.read()[:300]!r}")
+            raise APIError(e.code, f"{method} {urllib.parse.urlsplit(url).hostname} -> {e.code}: {e.read()[:300]!r}")
         except (urllib.error.URLError, TimeoutError):
             if attempt < 2:
                 time.sleep(3 * (attempt + 1))
@@ -131,12 +138,81 @@ def tg(method, **params):
     return res["result"]
 
 
-def send(text, keyboard=None, silent=False):
-    params = dict(chat_id=TG_CHAT, text=text, parse_mode="HTML",
-                  link_preview_options={"is_disabled": True}, disable_notification=silent)
+# Обложки для трёх типов сводок. Передаются Telegram как вложения.
+BANNERS = {'dawn': 'iVBORw0KGgoAAAANSUhEUgAAAoAAAACYCAIAAAD7tc+rAAADpElEQVR42u3YsU0EQQxA0emQAmjiSkCUQUp8KRlUQEpCdjEZQqSQISQChNizvfaTXgNr7+wf7Xo/PQAAwZYRAIAAA4AAAwACDAACDAAIMAAIMAAgwAAgwACAAAOAAAOAAAMAAgwAAgwACDDAVB9vT39laAIMQFx3lViAAUhOrwwLMABp6ZVhAQYgLb0yLMAAZNZXgwUYgIT0yrAAA5BZXw0WYAD11WABBmBSfTVYgAHUV4MFGIBJ9dVgAQZQXw0WYAAEGAEGUF8NFmAAGtZXgwUYQIAFWIABGFNfDRZgAAEWYAEGYEx9NViAAQRYgAUYgDH11WABBhBgAd51gJ/vAIi37wDb4L8JMID6arAAAwiwAAswAAIswAIMIMACLMAACDACDCDAAizAAAgwAgwgwAIswAAIMAIMIMACLMAAAizAAgyAAAuwAAMIsAALMAACbI8CDCDAAizAAAgwAgwgwAIswAD0aLD1CTCAAAuwAAMgwAgwgAarrwADIMAIMIAGq68AAwiwAAswABqsvgIMIMACLMAAjG2wNQkwgAarrwADIMAIMIAGq68AA7D7BluKAANosPoKMADdG2wRAgygweorwAB0b7DhCzCADEuvAAPQusFGHRrg18cjAPWdNb3GG0+AAUZn2EgFGIDQDBujAAMQV2JDE2AAEGAAQIABQIABAAEGAAEGAAQYAAQYYIarm+t4xi7AACpbi2UJMIDWSjICDDCgtZIswACKq8cIMCC36LEAAyiuGAuwKQCKixgLMIDiirEAAyguYizAgOiixAIMoLiIsQADiosYCzCA4qLEAgzILUoswIDcghgLMCC3KLEAA1oLM2IswIDWosQZAfYXHiQWxDg5wEqMfuzuOPgio8StAizGyAYgxskBVmL0FRDjzAArMSoLKHFmgMVYawHEODnAYqy1AHqcHGAl1loAMc4M8Hcv97cU4aQB1GnW6vpgOEgAlbO1hlw0tBaAUuVaE24ZcgtAtYSt9lcMrQWgYMtWs/vFxeGSnxwDgGoqBlgvxRtAgAUVwQYoFmCxQacBNg6wQiDSAGcMsK88Cg0gwCDPgACDPAMIMGgzIMCgzQACDNoMCDAgzIAAgzYDAgwIMyDAoM2AAAPCDAIMCDMgwIAwgwAD2gwIMCDMIMCANgMCDGgzCDCANoMAA9oMAgwgzwgwgDyDAAMoND18vYoCDCDSbN/XXwkwgE6zWVYFGECtiW6qAAOIt4hWJ8AAIMAAMMMn0uim0jbSxUIAAAAASUVORK5CYII=', 'dusk': 'iVBORw0KGgoAAAANSUhEUgAAAoAAAACYCAIAAAD7tc+rAAADp0lEQVR42u3YQUoEMRBA0dxnliq4EbcqIugB5gR6ybmJp3DrQhDBhQhJVU3qwbtAVzr9kx6Hwx0AEGwYAQAIMAAIMAAgwAAgwACAAAOAAAMAAgwAAgwACDAACDAACDAAIMAAIMAAgAADdPXxfjIEAQYgrrtfjEKAAQhNr/oKMADR6VVfAQYgOr3qK8AAJNRXgAUYgOj0qq8AA6C+CDBAg/oKsAADoL4IMECD+gqwAAOQUF8BFmAA1BcBBhBgBBiAFfUVYAEGQH0RYAABRoABWFFfARZgAAQYAQboUV8BFmAABBgBBuhRXwEWYABcf5kU4MuLFwDi/esGbFz7EWCA6vUVYAEGQIARYAABRoABEGAEGECAEWAABBgBBji7AGuwAAMgwAgwgAAjwACsC7AGCzAAAowAAwgwAgzAugBrsAADIMAIMECbAGuwAAOQE2ANFmAABBgBBtBgBBiApQHWYAEGICfAGizAAGgwAgzQKcAaLMAAaDACDNApwBoswACkNViGBRiAnABrsAADkNZgGRZgANIaPKXEci7AAAIcV2L3aQEG0OC1VfY3W4ABNPhUjUURYAANVl8BBmD3BlsIAQbQYPUVYAB2b7DhCzCADEuvAAOwdYONOjTAtzdHAOpbml7jjSfAAK0zbKQCDEBoho1RgAGIK7GhCTAACDAAIMAAIMAAgAADgAADAAIMAAIM0MPj/Ws8YxdgAJWtxWIJMIDWSjICDNCgtZIswACKq8cIMCC36LEAAyiuGAuwKQCKixgLMIDiirEAAyguYizAgOiixAIMoLiIsQADiosYCzCA4qLEAgzILUoswIDcghgLMCC3KLEAA1oLPWIswIDWosQZAfYXHiQWxDg5wEqMfpzddvBFRom3CrAYIxuAGCcHWInRV0CMMwOsxKgsoMSZARZjrQUQ4+QAi7HWAuhxcoCVWGsBxDgzwD89PbxRhJ0GUKdZY9cHw0YCqJyt0eSgobUAlCrX6HDKkFsAqiVsbH/E0FoACrZsbHa+uLp+5jfbAKCaigHWS/EGEGBBRbABigVYbNBpgMkBVghEGmBhgH3lUWgAAQZ5BgQY5BlAgEGbAQEGbQYQYNBmQIABYQYEGLQZEGBAmAEBBm0GBBgQZhBgQJgBAQaEGQQY0GZAgAFhBgEGtBkQYECbQYABtBkEGNBmEGAAeUaAAeQZBBhAodnD96sowAAizfy+/kmAAXSaaVkVYAC1JrqpAgwg3iJanQADgAADQA+fZmITBCHdmmcAAAAASUVORK5CYII=', 'week': 'iVBORw0KGgoAAAANSUhEUgAAAoAAAACYCAIAAAD7tc+rAAADo0lEQVR42u3YsU0EQQxA0amVGiiB6CqBmPAICdCJGFIiCriIkAwhESDEnu21n/QaWHtn/2jXy/sTABBsGQEACDAACDAAIMAAIMAAgAADgAADAAIMAAIMAAgwAAgwAAgwACDAACDAAIAAA0z1cX7+K0MTYADiuqvEAgxAcnplWIABSEuvDAswAGnplWEBBiCzvhoswAAkpFeGBRiAzPpqsAADqK8GCzAAk+qrwQIMoL4aLMAATKqvBgswgPpqsAADIMAIMID6arAAA9CwvhoswAACLMACDMCY+mqwAAMIsAALMABj6qvBAgwgwAIswACMqa8GCzCAAAvwngN8ensEIN6uA2x9/yfAAOqrwQIMIMACLMAACLAACzCAAAuwAAMgwAgwgAALsAADIMAIMIAAC7AAAyDACDCAAAuwAAMIsAALMAACLMACDCDAAizAAAiwPQowgAALsAADIMAIMIAAC7AAA9CjwdYnwAACLMACDIAAI8AAGqy+AgyAACPAABqsvgIMIMACLMAAaLD6CjCAAAuwAAMwtsHWJMAAGqy+AgyAACPAABqsvgIMwO4bbCkCDKDB6ivAAHRvsEUIMIAGq68AA9C9wYYvwAAyLL0CDEDrBht1aICPrw8A1HfR9BpvPAEGGJ1hIxVgAEIzbIwCDEBciQ1NgAFAgAEAAQYAAQYABBgABBgAEGAAEGCAGW5uD/GMXYABVLYWyxJgAK2VZAQYYEBrJVmAARRXjxFgQG7RYwEGUFwxFmBTABQXMRZgAMUVYwEGUFzEWIAB0UWJBRhAcRFjAQYUFzEWYADFRYkFGJBblFiAAbkFMRZgQG5RYgEGtBZmxFiAAa1FiTMC7C88SCyIcXKAlRj92N1x8EVGiVsFWIyRDUCMkwOsxOgrIMaZAVZiVBZQ4swAi7HWAohxcoDFWGsB9Dg5wEqstQBinBng7+5O9xThpAHUadbq+mA4SACVs7WGXDS0FoBS5VoTbhlyC0C1hK32VwytBaBgy1az+8XV4ZqfHAOAaioGWC/FG0CABRXBBigWYLFBpwE2DrBCINIAFwywrzwKDSDAIM+AAIM8AwgwaDMgwKDNAAIM2gwIMCDMgACDNgMCDAgzIMCgzYAAA8IMAgwIMyDAgDCDAAPaDAgwIMwgwIA2AwIMaDMIMIA2gwAD2gwCDCDPCDCAPIMAAyg0PXy9igIMINJs39dfCTCATrNZVgUYQK2JbqoAA4i3iFYnwAAgwAAwwyft4SzdF+pASgAAAABJRU5ErkJggg=='}
+
+
+def rich_html(text):
+    """Переносит существующие заголовки и строки в нативные блоки Telegram."""
+    def render_quote(match):
+        items = []
+        for line in match[1].splitlines():
+            if line.startswith(" ") and items:
+                items[-1] += "<br>" + line.strip()
+            elif line.strip():
+                items.append(line.strip())
+        return "<ul>" + "".join(f"<li>{item}</li>" for item in items) + "</ul>" if items else ""
+
+    result = []
+    for section in text.split("\n\n"):
+        title, sep, body = section.partition("\n")
+        if re.fullmatch(r"<b>.*</b>", title):
+            title = "<h" + ("2" if not result else "3") + ">" + title[3:-4] + ("</h2>" if not result else "</h3>")
+        else:
+            body = section
+            title = ""
+        body = re.sub(r"<blockquote>(.*?)</blockquote>", render_quote, body, flags=re.S)
+        parts = re.split(r"(<ul>.*?</ul>)", body, flags=re.S)
+        content = "".join(part if part.startswith("<ul>") else f"<p>{part.strip().replace(chr(10), '<br>')}</p>"
+                          for part in parts if part.strip())
+        if title or content:
+            if title.startswith("<h3>") and ("Просрочено" in title or "Поездка" in title):
+                result.append(f"<details><summary>{title[4:-5]}</summary>{content}</details>")
+            else:
+                result.append(title + content)
+    return "".join(result)
+
+
+def send_rich(params, banner):
+    if not banner:
+        return tg("sendRichMessage", **params)
+    boundary = uuid.uuid4().hex
+    rich = params["rich_message"]
+    rich["html"] = '<img src="tg://photo?id=cover">' + rich["html"]
+    rich["media"] = [{"id": "cover", "media": {"type": "photo", "media": "attach://cover"}}]
+    body = bytearray()
+    for key, value in params.items():
+        body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n'.encode())
+        body.extend((value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)).encode())
+        body.extend(b"\r\n")
+    body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="cover"; filename="cover.png"\r\n'
+                'Content-Type: image/png\r\n\r\n'.encode())
+    body.extend(base64.b64decode(BANNERS[banner]))
+    body.extend(f"\r\n--{boundary}--\r\n".encode())
+    result = http("POST", f"https://api.telegram.org/bot{TG_TOKEN}/sendRichMessage",
+                  {"Content-Type": f"multipart/form-data; boundary={boundary}"}, bytes(body))
+    return result["result"]
+
+
+def send(text, keyboard=None, silent=False, banner=None, chat_id=None):
+    params = dict(chat_id=TG_CHAT if chat_id is None else chat_id, disable_notification=silent)
     if keyboard:
         params["reply_markup"] = {"inline_keyboard": keyboard}
-    return tg("sendMessage", **params)
+    rich = rich_html(text)
+    try:
+        return send_rich({**params, "rich_message": {"html": rich}}, banner)
+    except APIError as e:
+        if e.status not in (400, 404):
+            raise
+        if banner:
+            try:
+                return send_rich({**params, "rich_message": {"html": rich}}, None)
+            except APIError as retry_error:
+                if retry_error.status not in (400, 404):
+                    raise
+        log("Telegram: rich-формат отклонён, отправляю обычное сообщение")
+        return tg("sendMessage", **params, text=text, parse_mode="HTML",
+                  link_preview_options={"is_disabled": True})
 
 
 # ---------- Todoist ----------
@@ -542,18 +618,18 @@ def mail_block(since, limit=6):
         mails = important_mail(since)
     except Exception as e:
         log("mail:", e)
-        return "✉️ Почта: проверить не удалось"
+        return "<b>✉️ Почта</b>\nПроверка писем не удалась."
     if mails is None:
-        return None
+        return "<b>✉️ Почта</b>\nПочта ещё не подключена."
     if not mails:
-        return "✉️ Почта: важного нет"
+        return "<b>✉️ Почта</b>\nНовых важных писем нет."
     lines = []
     for x in mails[:limit]:
         plate = "".join(f"<code>{t}</code> " for t in x["tags"])
-        lines.append(f"{plate}<b>{esc(x['from'])}</b>\n      {esc(x['subject'])}")
+        lines.append(f"{plate}<b>{esc(x['subject'])}</b>\n      {esc(x['from'])}")
     if len(mails) > limit:
         lines.append(f"<i>…и ещё {len(mails) - limit}</i>")
-    return f"<b>✉️ ПОЧТА · {len(mails)}</b>\n" + quote(lines)
+    return f"<b>✉️ Почта · {len(mails)}</b>\n" + quote(lines)
 
 
 # ---------- Утро ----------
@@ -628,7 +704,9 @@ def morning():
         head.append(weather_line(weather(), 0))
     except Exception as e:
         log("weather:", e)
-    blocks = ["\n".join(head)]
+    blocks = ["\n".join(head[:2])]
+    if len(head) > 2:
+        blocks.append("<b>☁ Погода</b>\n" + head[2])
 
     # обычные дела на сегодня + ДЕДЛ-задания, которые сегодня публикуют
     todays = sorted([t for t in tasks if due_date(t) == d0], key=sort_key)
@@ -641,7 +719,7 @@ def morning():
                 lines.append(f"🎯 <b>ВЫШЛО</b> {esc(strip_dedl(t['content']))} · <code>{when}</code>")
             else:
                 lines.append(task_line(t))
-        blocks.append(f"<b>📋 СЕГОДНЯ · {len(todays)}</b>\n" + quote(lines))
+        blocks.append(f"<b>📋 На сегодня · {len(todays)}</b>\n" + quote(lines))
     else:
         blocks.append("📋 Сегодня: дел нет")
 
@@ -666,7 +744,7 @@ def morning():
             lines.append(f"<i>…и ещё {len(overdue) - 7}</i>")
         if in_pause:
             lines.append(f"<i>+{len(in_pause)} за время паузы, они в Todoist</i>")
-        blocks.append(f"<b>⚠️ ХВОСТЫ · {len(overdue)}</b>\n" + quote(lines))
+        blocks.append(f"<b>⚠️ Просрочено · {len(overdue)}</b>\n" + quote(lines))
 
     dls = sorted([(deadline_of(t), t) for t in tasks
                   if deadline_of(t) and 0 <= (deadline_of(t) - d0).days <= 14
@@ -679,7 +757,7 @@ def morning():
             if is_dedl(t) and due_date(t) > d0:
                 line += " · в день выхода" if due_date(t) == dl else f" · выйдет {fmt_day(due_date(t))}"
             lines.append(line)
-        blocks.append("<b>🎯 ДЕДЛАЙНЫ</b>\n" + quote(lines))
+        blocks.append("<b>🎯 Ближайшие сроки</b>\n" + quote(lines))
     else:
         blocks.append("🎯 Дедлайнов в ближайшие две недели нет")
 
@@ -688,10 +766,9 @@ def morning():
         blocks.append(tb)
 
     mb = mail_block(now() - timedelta(hours=24))
-    if mb:
-        blocks.append(mb)
+    blocks.append(mb)
 
-    send("\n\n".join(blocks))
+    send("\n\n".join(blocks), banner="dawn")
 
     # Отдельное напоминание только накануне и в день дедлайна
     for dl, t in dls:
@@ -776,7 +853,7 @@ def trip_block(tasks, d0):
                 lines.append(f"<code>{WD_SHORT[dd.weekday()]} {dd.day:02d}.{dd.month:02d}</code> {weather_line(w, i)}")
             left = (start - d0).days
             when = "сегодня" if left == 0 else "завтра" if left == 1 else f"через {left} {plural(left, 'день', 'дня', 'дней')}"
-            out.append(f"<b>🧳 ПОЕЗДКА · {esc(name)}</b> <i>{when}</i>\n" + quote(lines))
+            out.append(f"<b>🧳 Поездка · {esc(name)}</b>\n<i>{when}</i>\n" + quote(lines))
         except Exception as e:
             log("trip:", e)
     return "\n\n".join(out) or None
@@ -826,25 +903,33 @@ def evening():
         head.append("Завтра: " + weather_line(weather(), 1))
     except Exception as e:
         log("weather:", e)
-    blocks = ["\n".join(head)]
+    blocks = ["\n".join(head[:2])]
+    if len(head) > 2:
+        blocks.append("<b>☁ Погода</b>\n" + head[2])
+
+    total = len(done) + len(left)
+    if total:
+        filled = round(8 * len(done) / total)
+        bar = "■" * filled + "□" * (8 - filled)
+        blocks.append(f"<b>{len(done)} из {total} дел готово</b>\n<code>{bar}</code>")
 
     if done:
         lines = [task_line({"content": t.get("content", "")}) for t in done[:10]]
         if len(done) > 10:
             lines.append(f"<i>…и ещё {len(done) - 10}</i>")
-        blocks.append(f"<b>✅ СДЕЛАНО · {len(done)}</b>\n" + quote(lines))
+        blocks.append(f"<b>✅ Сделано · {len(done)}</b>\n" + quote(lines))
     else:
         blocks.append("✅ Сделано: пока ничего не отмечено")
 
     tomorrow = d0 + timedelta(days=1)
     timed = sorted([t for t in tasks if due_date(t) == tomorrow and due_time(t)], key=sort_key)
     if timed:
-        blocks.append("<b>📅 ЗАВТРА ПО ВРЕМЕНИ</b>\n" + quote([task_line(t) for t in timed]))
+        blocks.append("<b>📅 Завтра по времени</b>\n" + quote([task_line(t) for t in timed]))
 
     if soon:
         lines = [f"🔴 {esc(strip_dedl(t['content']))}\n      {left_plate((dl - d0).days)} · {fmt_day(dl)}"
                  for dl, t in soon]
-        blocks.append("<b>🎯 СКОРО СДАВАТЬ</b>\n" + quote(lines))
+        blocks.append("<b>🎯 Скоро сдавать</b>\n" + quote(lines))
 
     if d0.weekday() == 6:
         blocks.append(weekly_stats(d0))
@@ -852,26 +937,25 @@ def evening():
     # почта, пришедшая после утренней сводки
     h, mnt = map(int, MORNING_AT.split(":"))
     mb = mail_block(datetime(d0.year, d0.month, d0.day, h, mnt, tzinfo=TZ))
-    if mb:
-        blocks.append(mb)
+    blocks.append(mb)
 
     if not left:
         blocks.append("🎉 Все дела на сегодня закрыты")
-        send("\n\n".join(blocks))
+        send("\n\n".join(blocks), banner="dusk")
         if d0.weekday() == 6:
-            send(week_plan(tasks, d0 + timedelta(days=1)))
+            send(week_plan(tasks, d0 + timedelta(days=1)), banner="week")
         return
 
     # сами дела показаны кнопками ниже, отдельным списком не дублируем
-    blocks.append(f"<b>⏳ ОСТАЛОСЬ · {len(left)}</b>\n"
+    blocks.append(f"<b>⏳ Осталось · {len(left)}</b>\n"
                   "<i>Отмеченное ✅ перенесу на завтра. Нажми на дело, чтобы оставить его на месте ✖️</i>")
     shown = left[:40]
     kb = [[{"text": "✅ " + short(t["content"]), "callback_data": "t:" + t["id"]}] for t in shown]
     kb.append([{"text": "➡️ Перенести на завтра", "callback_data": "go:" + d0.isoformat()}])
     kb.append([{"text": "Ничего не переносить", "callback_data": "no"}])
-    msg = send("\n\n".join(blocks), kb)
+    msg = send("\n\n".join(blocks), kb, banner="dusk")
     if d0.weekday() == 6:
-        send(week_plan(tasks, d0 + timedelta(days=1)))
+        send(week_plan(tasks, d0 + timedelta(days=1)), banner="week")
 
     # нажатия кнопок обрабатывает Cloudflare Worker (папка worker/), ждать здесь не нужно
 
@@ -913,7 +997,7 @@ def week_plan(tasks, monday):
     if free:
         summary.append(f"свободно: {', '.join(free)}")
     sunday = days[-1]
-    head = (f"<b>🗓 ПЛАН НЕДЕЛИ</b>\n<i>{monday.day} {MONTHS[monday.month - 1]} – "
+    head = (f"<b>🗓 Следующая неделя</b>\n<i>{monday.day} {MONTHS[monday.month - 1]} – "
             f"{sunday.day} {MONTHS[sunday.month - 1]}</i>")
     text = head + "\n" + quote(lines)
     if summary:
@@ -935,7 +1019,7 @@ def weekly_stats(d0):
     top = max(per) or 1
     rows = [f"<code>{WD_SHORT[i]} {('█' * round(n / top * 8)) if n else '·':<8} {n}</code>"
             for i, n in enumerate(per)]
-    return f"<b>📊 НЕДЕЛЯ · {total} {plural(total, 'дело', 'дела', 'дел')}</b>\n" + quote(rows)
+    return f"<b>📊 Неделя в делах · {total} {plural(total, 'дело', 'дела', 'дел')}</b>\n" + quote(rows)
 
 
 # ---------- Обработка кнопок ----------
@@ -1120,7 +1204,7 @@ def remind():
 def mail_now():
     """Проверка почты по кнопке «✉️ Проверить почту»: важные письма за последние сутки."""
     mb = mail_block(now() - timedelta(hours=24), limit=10)
-    send(mb or "✉️ Почта не подключена")
+    send(mb)
 
 
 def whoami():
@@ -1132,9 +1216,8 @@ def whoami():
         if chat.get("type") == "private":
             chats[chat["id"]] = chat
     for cid in chats:
-        tg("sendMessage", chat_id=cid, parse_mode="HTML",
-           text=f"Твой ID: <code>{cid}</code>\n\nНажми на число, чтобы скопировать, и вставь его "
-                f"в секрет TELEGRAM_CHAT_ID на GitHub.")
+        send(f"<b>Твой Telegram ID</b>\n<code>{cid}</code>\nНажми на число, чтобы скопировать.",
+             chat_id=cid)
     if ups:
         tg("getUpdates", offset=ups[-1]["update_id"] + 1, timeout=0)
     log(f"ответил в {len(chats)} чат(ов)")
